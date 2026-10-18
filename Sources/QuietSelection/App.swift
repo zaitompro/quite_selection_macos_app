@@ -9,6 +9,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     private let worker = DispatchQueue(label: "local.quietselection.ax", qos: .userInitiated)
     private var hotKey: HotKey?
     private var ocrHotKey: HotKey?
+    private var primaryHotKey: HotKey?
+    private var translationHotKey: HotKey?
+    private var primaryShortcut = PrimaryShortcut.controlOptionEscape
+    private var translationShortcut = TranslationShortcut.commandEscape
+    private var primaryRegistered = false
+    private var translationRegistered = false
+    private enum ReadMode { case normal, primary, translated }
+    private let translator = LocalTranslation()
+    private var translationTask: Task<Void, Never>?
+    private var translating = false
+    private var languageChooser: SourceLanguageChooser?
+    private var preparation: TranslationPreparationWindow?
+    private var preparationID = UUID()
+    private var preparingPair: (source: String, target: String)?
+    private var availabilityTask: Task<Void, Never>?
+    private var availabilityKey = ""
+    private var translationStates: [String: TranslationReadiness] = [:]
     private var ocrShortcut = OCRShortcut.controlEscape
     private var ocrRegistered = false
     private let regionPicker = RegionPicker()
@@ -55,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         statusItem.menu = AppMenu.status(target: self, version: version)
         speech.finished = { [weak self] in
             DispatchQueue.main.async {
-                guard let self, !self.speech.speaking, !self.ocrBusy, !self.regionPicker.active, !self.pending else { return }
+                guard let self, !self.speech.speaking, !self.ocrBusy, !self.regionPicker.active, !self.pending, !self.translating else { return }
                 self.setStatus("Готово")
             }
         }
@@ -70,6 +87,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
             ocrHotKey?.action = { [weak self] in self?.triggerOCR() }
             changeOCRShortcut(ocrShortcut)
         } catch { setStatus("Не удалось установить сочетание чтения области") }
+        primaryShortcut = PrimaryShortcut(rawValue: preferences.integer(forKey: "PrimaryShortcut")) ?? .controlOptionEscape
+        translationShortcut = TranslationShortcut(rawValue: preferences.integer(forKey: "TranslationShortcut")) ?? .commandEscape
+        do {
+            primaryHotKey = try HotKey(identifier: 3)
+            primaryHotKey?.action = { [weak self] in self?.trigger(mode: .primary) }
+            changePrimaryShortcut(primaryShortcut)
+            translationHotKey = try HotKey(identifier: 4)
+            translationHotKey?.action = { [weak self] in self?.trigger(mode: .translated) }
+            changeTranslationShortcut(translationShortcut)
+        } catch { setStatus("Не удалось установить дополнительные сочетания") }
         if CommandLine.arguments.contains("--show-settings") { showSettings() }
     }
 
@@ -98,6 +125,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         settings?.setStatus(message)
         settings?.updateScreenReading(shortcut: ocrShortcut, registered: ocrRegistered,
                                       permitted: CGPreflightScreenCaptureAccess())
+        settings?.updateExtraShortcuts(primary: primaryShortcut, primaryRegistered: primaryRegistered,
+            translation: translationShortcut, translationRegistered: translationRegistered)
+        refreshTranslation()
     }
     @objc func closeSettings() { settings?.closeSettings() }
     @objc func quitApplication() { NSApp.terminate(nil) }
@@ -146,6 +176,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
             }
             controller.onShortcut = { [weak self] in self?.changeShortcut($0) }
             controller.onOCRShortcut = { [weak self] in self?.changeOCRShortcut($0) }
+            controller.onPrimaryShortcut = { [weak self] in self?.changePrimaryShortcut($0) }
+            controller.onTranslationShortcut = { [weak self] in self?.changeTranslationShortcut($0) }
+            controller.translationSettings.onRefresh = { [weak self] in self?.refreshTranslation(force: true) }
+            controller.translationSettings.onDownload = { [weak self] in self?.prepareTranslation(source: $0) }
             controller.onReadRegion = { [weak self] in self?.triggerOCR() }
             controller.onScreenPermission = { [weak self] in self?.screenPermission() }
             controller.onLogin = { [weak self] enabled in
@@ -188,8 +222,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         } catch { fail("Не удалось сменить сочетание. Прежнее сохранено.") }
         refresh()
     }
-    private func trigger() {
-        if speech.speaking || pending || ocrBusy || regionPicker.active { stop(); return }
+    private func trigger(mode: ReadMode = .normal) {
+        if speech.speaking || pending || ocrBusy || regionPicker.active || translating { stop(); return }
         guard !IsSecureEventInputEnabled() else { fail(SelectionFailure.secureInput.message); return }
         guard let app = NSWorkspace.shared.frontmostApplication else {
             fail(SelectionFailure.noFocus.message); return
@@ -198,8 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         if pid == ProcessInfo.processInfo.processIdentifier {
             do {
                 let selected = try LocalSelection.read(from: NSApp.keyWindow)
-                if speech.speak(selected) { setStatus("Чтение; повторное сочетание — остановить") }
-                else { fail("Нужный голос недоступен. Выберите его в настройках речи.") }
+                read(selected, mode: mode)
             } catch { fail((error as? SelectionFailure)?.message ?? "Не удалось получить выделение") }
             return
         }
@@ -231,9 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 }
                 switch result {
                 case .success(let text):
-                    if self.speech.speak(text) {
-                        self.setStatus("Чтение; повторное сочетание — остановить")
-                    } else { self.fail("Нужный голос недоступен. Выберите его в настройках речи.") }
+                    self.read(text, mode: mode)
                 case .failure(let error):
                     let reason = error as? SelectionFailure
                     let detail: String
@@ -245,9 +276,143 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
             }
         }
     }
+    private func read(_ text: String, mode: ReadMode) {
+        let voiceID = selection.selectedVoice(in: voices)?.id
+        let rate = selection.rate(for: selection.language)
+        if mode != .translated {
+            let success = mode == .primary ? speech.speakPrimary(text, voiceID: voiceID, rate: rate) : speech.speak(text)
+            if success { setStatus("Чтение; повторное сочетание — остановить") }
+            else { fail("Нужный голос недоступен. Выберите его в настройках речи.") }
+            return
+        }
+        guard voiceID != nil else { fail("Основной голос недоступен. Выберите его в настройках речи."); return }
+        generation += 1
+        let ticket = generation
+        let target = selection.language
+        let languages = allowed
+        let plan = TranslationPlan.parts(text, allowed: languages, target: target)
+        guard !plan.isEmpty else { fail("Нет текста для перевода"); return }
+        translating = true
+        if plan.contains(where: { $0.source == nil }) {
+            setStatus("Выберите язык неопределённых фрагментов")
+            languageChooser = SourceLanguageChooser(languages: languages) { [weak self] code in
+                guard let self, ticket == self.generation else { return }
+                self.languageChooser = nil
+                guard let code else { self.translating = false; self.setStatus("Перевод отменён"); return }
+                self.translate(TranslationPlan.resolving(plan, with: code), target: target,
+                    voiceID: voiceID, rate: rate, ticket: ticket)
+            }
+            languageChooser?.present()
+        } else { translate(plan, target: target, voiceID: voiceID, rate: rate, ticket: ticket) }
+    }
+    private func translate(_ plan: [TranslationPlan.Part], target: String, voiceID: String?, rate: Float, ticket: Int) {
+        setStatus("Перевод на основной язык…")
+        translationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let translated = try await TranslationPipeline.run(plan, target: target, backend: self.translator)
+                try Task.checkCancellation()
+                guard ticket == self.generation else { return }
+                self.translating = false; self.translationTask = nil
+                self.translator.cancel()
+                if self.speech.speakPrimary(translated, voiceID: voiceID, rate: rate) {
+                    self.setStatus("Чтение на основном языке; повторное сочетание — остановить")
+                } else { self.fail("Основной голос недоступен. Выберите его в настройках речи.") }
+            } catch {
+                guard ticket == self.generation else { return }
+                self.translating = false; self.translationTask = nil
+                self.translator.cancel()
+                if error is CancellationError { self.setStatus("Перевод отменён") }
+                else if case TranslationFailure.unavailable(let source) = error {
+                    self.fail("Нужна загрузка языков: \(VoiceChoice.languageTitle(source)) → \(VoiceChoice.languageTitle(target)). Откройте раздел «Перевод».")
+                } else if case TranslationFailure.unsupported(let source) = error {
+                    self.fail("macOS не поддерживает перевод: \(VoiceChoice.languageTitle(source)) → \(VoiceChoice.languageTitle(target)).")
+                } else { self.fail("Не удалось выполнить локальный перевод. Проверьте готовность языков. Код: \((error as NSError).code)") }
+            }
+        }
+    }
+    private func refreshTranslation(force: Bool = false) {
+        let target = selection.language
+        let sources = allowed.filter { $0 != target }.sorted()
+        let key = ([target] + sources).joined(separator: ":")
+        if force || key != availabilityKey {
+            availabilityTask?.cancel()
+            availabilityKey = key
+            translationStates = [:]
+            availabilityTask = Task { [weak self] in
+                guard let self else { return }
+                let backend = LocalTranslation()
+                for source in sources {
+                    let state = await backend.readiness(source: source, target: target)
+                    guard !Task.isCancelled, self.availabilityKey == key else { return }
+                    self.translationStates[source] = state
+                    self.updateTranslationUI()
+                }
+            }
+        }
+        updateTranslationUI()
+    }
+    private func updateTranslationUI() {
+        var states = translationStates
+        if let pair = preparingPair, pair.target == selection.language, states[pair.source] != .installed {
+            states[pair.source] = .preparing
+        }
+        settings?.translationSettings.update(target: selection.language,
+            sources: allowed.filter { $0 != selection.language }, states: states)
+    }
+    private func prepareTranslation(source: String) {
+        guard source != selection.language, allowed.contains(source), translationStates[source] == .supported else { return }
+        if preparation?.window?.isVisible == true { preparation?.present(); return }
+        let target = selection.language
+        preparationID = UUID()
+        let ticket = preparationID
+        preparingPair = (source, target)
+        updateTranslationUI()
+        preparation = TranslationPreparationWindow(source: source, target: target) { [weak self] state in
+            guard let self, self.preparationID == ticket else { return }
+            switch state {
+            case .requesting, .waiting: self.preparingPair = (source, target)
+            default: self.preparingPair = nil; self.refreshTranslation(force: true)
+            }
+            self.setStatus(state.message)
+            self.updateTranslationUI()
+        }
+        preparation?.onClose = { [weak self] in
+            guard let self, self.preparationID == ticket else { return }
+            self.preparationID = UUID() // Ignore late completion from the detached view.
+            if self.preparingPair != nil { self.setStatus("Проверка подготовки закрыта. Готовность можно проверить в разделе «Перевод».") }
+            self.preparingPair = nil
+            self.refreshTranslation(force: true)
+        }
+        preparation?.present()
+    }
+    private func changePrimaryShortcut(_ requested: PrimaryShortcut) {
+        guard let primaryHotKey else { return }
+        if primaryRegistered && requested == primaryShortcut { return }
+        do {
+            try primaryHotKey.register(keyCode: requested.keyCode, modifiers: requested.modifiers)
+            primaryShortcut = requested; primaryRegistered = true
+            preferences.set(requested.rawValue, forKey: "PrimaryShortcut")
+        } catch { fail("Сочетание основного голоса занято. Прежнее сохранено.") }
+        refresh()
+    }
+    private func changeTranslationShortcut(_ requested: TranslationShortcut) {
+        guard let translationHotKey else { return }
+        if translationRegistered && requested == translationShortcut { return }
+        do {
+            try translationHotKey.register(keyCode: requested.keyCode, modifiers: requested.modifiers)
+            translationShortcut = requested; translationRegistered = true
+            preferences.set(requested.rawValue, forKey: "TranslationShortcut")
+        } catch { fail("Сочетание перевода занято. Прежнее сохранено.") }
+        refresh()
+    }
     private func fail(_ text: String) { setStatus(text); NSSound.beep() }
     private func stop() {
         generation += 1
+        translationTask?.cancel(); translationTask = nil
+        translator.cancel()
+        translating = false
+        languageChooser?.cancel(); languageChooser = nil
         ocrGeneration += 1
         captureTask?.cancel(); captureTask = nil
         ocrJob?.cancel(); ocrJob = nil
@@ -257,7 +422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         setStatus(pending ? "Запрос отменён; ожидание завершения" : "Остановлено")
     }
     private func preview(language: String) {
-        if speech.speaking || pending || ocrBusy || regionPicker.active { stop(); return }
+        if speech.speaking || pending || ocrBusy || regionPicker.active || translating { stop(); return }
         // Audition always uses the voice shown in the menus, even in auto mode.
         let enabled = speech.automatic
         let previousVoice = speech.voiceID
@@ -319,7 +484,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         refresh()
     }
     private func triggerOCR() {
-        if regionPicker.active || ocrBusy || speech.speaking || pending { stop(); return }
+        if regionPicker.active || ocrBusy || speech.speaking || pending || translating { stop(); return }
         guard !IsSecureEventInputEnabled() else { fail(SelectionFailure.secureInput.message); return }
         guard CGPreflightScreenCaptureAccess() else { screenPermission(); return }
         ocrGeneration += 1
@@ -372,7 +537,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         else if let reason = error as? SelectionFailure { fail(reason.message) }
         else { fail("Ошибка распознавания или захвата экрана: \((error as NSError).code)") }
     }
-    func applicationWillTerminate(_ notification: Notification) { stop(); hotKey = nil; ocrHotKey = nil }
+    func applicationWillTerminate(_ notification: Notification) {
+        stop(); availabilityTask?.cancel()
+        hotKey = nil; ocrHotKey = nil; primaryHotKey = nil; translationHotKey = nil
+    }
     static let sampleText = "Это выбранный голос. Вы можете настроить удобную скорость чтения."
 }
 
@@ -392,6 +560,9 @@ struct QuietSelectionMain {
             controller.update(voices: voices, selection: selection, automatic: true,
                 testShortcut: false, login: "enabled", trusted: true)
             controller.updateScreenReading(shortcut: .controlEscape, registered: true, permitted: false)
+            controller.translationSettings.update(target: "ru", sources: ["en", "ja"], states: [:])
+            controller.updateExtraShortcuts(primary: .controlOptionEscape, primaryRegistered: true,
+                translation: .commandEscape, translationRegistered: true)
             do {
                 try controller.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
                 print("settings_render=PASS selection_queries=0")

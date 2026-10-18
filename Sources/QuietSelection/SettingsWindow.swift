@@ -15,6 +15,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     var onRemoveLanguage: ((String) -> Void)?
     var onShortcut: ((Bool) -> Void)?
     var onOCRShortcut: ((OCRShortcut) -> Void)?
+    var onPrimaryShortcut: ((PrimaryShortcut) -> Void)?
+    var onTranslationShortcut: ((TranslationShortcut) -> Void)?
     var onReadRegion: (() -> Void)?
     var onScreenPermission: (() -> Void)?
     var onLogin: ((Bool) -> Void)?
@@ -26,8 +28,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     var onRefresh: (() -> Void)?
 
     let speechSettings = SpeechSettingsView(frame: .zero)
+    let translationSettings = TranslationSettingsView(frame: .zero)
     private let shortcutMenu = NSPopUpButton()
     private let ocrShortcutMenu = NSPopUpButton()
+    private let primaryShortcutMenu = NSPopUpButton()
+    private let translationShortcutMenu = NSPopUpButton()
+    private let primaryShortcutNote = NSTextField(wrappingLabelWithString: "")
+    private let translationShortcutNote = NSTextField(wrappingLabelWithString: "")
     private let screenPermissionNote = NSTextField(wrappingLabelWithString: "")
     private let screenShortcutNote = NSTextField(wrappingLabelWithString: "")
     private let loginSwitch = SettingsSwitch(frame: .zero)
@@ -38,7 +45,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     private var pages: [NSView] = []
     private let tabs = NSTabView()
     private let navigation = NSTableView()
-    private let sectionTitles = ["Общие", "Речь", "Сочетания клавиш", "Чтение с экрана"]
+    private let sectionTitles = ["Общие", "Речь", "Перевод", "Сочетания клавиш", "Чтение с экрана"]
     private var scrollViews: [NSScrollView] = []
     private var presentationPending = false
 
@@ -103,13 +110,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     private func build() {
         guard let root = window?.contentView else { return }
         root.wantsLayer = true
-        for control in [shortcutMenu, ocrShortcutMenu] {
+        for control in [shortcutMenu, ocrShortcutMenu, primaryShortcutMenu, translationShortcutMenu] {
             control.controlSize = .large
             control.font = .systemFont(ofSize: 17)
             control.target = self
             control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         }
-        for note in [loginNote, permissionNote, status, screenPermissionNote, screenShortcutNote] {
+        for note in [loginNote, permissionNote, status, screenPermissionNote, screenShortcutNote, primaryShortcutNote, translationShortcutNote] {
             note.isSelectable = true
             note.font = .systemFont(ofSize: 16)
             note.textColor = .labelColor
@@ -127,16 +134,28 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         ocrShortcutMenu.addItems(withTitles: OCRShortcut.allCases.map(\.title))
         ocrShortcutMenu.action = #selector(ocrShortcutChanged)
         ocrShortcutMenu.setAccessibilityLabel("Сочетание для распознавания области экрана")
+        primaryShortcutMenu.addItems(withTitles: PrimaryShortcut.allCases.map(\.title))
+        primaryShortcutMenu.action = #selector(primaryShortcutChanged)
+        primaryShortcutMenu.setAccessibilityLabel("Читать основным голосом")
+        translationShortcutMenu.addItems(withTitles: TranslationShortcut.allCases.map(\.title))
+        translationShortcutMenu.action = #selector(translationShortcutChanged)
+        translationShortcutMenu.setAccessibilityLabel("Перевести и прочитать")
         let shortcutsPage = column([
             label("Сочетания клавиш", size: 26, bold: true),
             label("Читать / остановить выделение", bold: true),
             shortcutMenu,
             label("Повторное нажатие останавливает чтение. Сочетание работает и при закрытом окне настроек."),
             label("Для Option + Esc штатное «Проговаривание выбранного текста» должно быть отключено или использовать другое сочетание.", size: 16),
+            field("Читать основным голосом", control: primaryShortcutMenu),
+            label("Без перевода и автоопределения: основной язык, голос и скорость из раздела «Речь».", size: 16),
+            primaryShortcutNote,
+            field("Перевести и прочитать", control: translationShortcutMenu),
+            label("Command + Esc также используется системным Accessibility Reader. Если он включён, выберите другое сочетание.", size: 16),
+            translationShortcutNote,
             label("Распознать и прочитать область экрана", bold: true),
             ocrShortcutMenu,
             label("Нажмите сочетание и выделите область мышью. Повторное нажатие отменяет распознавание или останавливает речь. Esc отменяет выбор области.", size: 16)
-        ], spacing: 22)
+        ], spacing: 16)
         loginSettings = button("Настройки входа macOS…", #selector(openLoginSettings))
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "тестовая сборка"
         let generalPage = column([
@@ -162,7 +181,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
             screenPermissionNote,
             button("Разрешение на чтение экрана…", #selector(screenPermission))
         ], spacing: 18)
-        pages = [generalPage, speechSettings, shortcutsPage, screenPage]
+        pages = [generalPage, speechSettings, translationSettings, shortcutsPage, screenPage]
         tabs.tabPosition = .none
         tabs.tabViewBorderType = .none
         tabs.font = .systemFont(ofSize: 17, weight: .medium)
@@ -283,6 +302,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         permissionNote.stringValue = trusted ? "Доступ разрешён." : "Нужно разрешение «Универсальный доступ» для QuietSelection."
     }
     func setStatus(_ message: String) { status.stringValue = message }
+    func updateExtraShortcuts(primary: PrimaryShortcut, primaryRegistered: Bool,
+                              translation: TranslationShortcut, translationRegistered: Bool) {
+        primaryShortcutMenu.selectItem(at: primary.rawValue)
+        translationShortcutMenu.selectItem(at: translation.rawValue)
+        primaryShortcutNote.stringValue = primaryRegistered ? "" : "Сочетание недоступно. Выберите другое."
+        translationShortcutNote.stringValue = translationRegistered ? "" : "Сочетание недоступно. Выберите другое."
+        primaryShortcutNote.isHidden = primaryRegistered
+        translationShortcutNote.isHidden = translationRegistered
+    }
     func updateScreenReading(shortcut: OCRShortcut, registered: Bool, permitted: Bool) {
         ocrShortcutMenu.selectItem(at: shortcut.rawValue)
         screenShortcutNote.stringValue = registered ? "Сочетание: " + shortcut.title
@@ -377,6 +405,12 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     @objc private func shortcutChanged() { onShortcut?(shortcutMenu.indexOfSelectedItem == 1) }
     @objc private func ocrShortcutChanged() {
         if let shortcut = OCRShortcut(rawValue: ocrShortcutMenu.indexOfSelectedItem) { onOCRShortcut?(shortcut) }
+    }
+    @objc private func primaryShortcutChanged() {
+        if let value = PrimaryShortcut(rawValue: primaryShortcutMenu.indexOfSelectedItem) { onPrimaryShortcut?(value) }
+    }
+    @objc private func translationShortcutChanged() {
+        if let value = TranslationShortcut(rawValue: translationShortcutMenu.indexOfSelectedItem) { onTranslationShortcut?(value) }
     }
     @objc private func readRegion() { onReadRegion?() }
     @objc private func screenPermission() { onScreenPermission?() }

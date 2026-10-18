@@ -80,6 +80,21 @@ final class Speech: NSObject, AVSpeechSynthesizerDelegate {
         return true
     }
 
+    func primaryUtterance(_ text: String, voiceID: String?, rate: Float) -> AVSpeechUtterance? {
+        guard let voice = Self.installedVoices().first(where: { $0.identifier == voiceID }) else { return nil }
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = voice
+        utterance.rate = Self.validatedRate(rate)
+        utterance.prefersAssistiveTechnologySettings = false
+        return utterance
+    }
+
+    @discardableResult func speakPrimary(_ text: String, voiceID: String?, rate: Float) -> Bool {
+        guard let utterance = primaryUtterance(text, voiceID: voiceID, rate: rate) else { return false }
+        synthesizer.speak(utterance)
+        return true
+    }
+
     func stop() { synthesizer.stopSpeaking(at: .immediate) }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {

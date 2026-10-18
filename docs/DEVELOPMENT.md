@@ -19,6 +19,8 @@ build/WindowTests --render "$PWD/build/ui-preview"
 
 The speech smoke checks synthesize fixed test phrases into memory, without playback or audio files. The render command saves only the application's own test window. The real Safari/Mail scrolling workflow, external-app selection, OCR focus restoration and permission continuity require manual checks. A CLI `--self-check` result is not sufficient evidence of the GUI application's Accessibility permission.
 
+`build/RegionPickerTests` briefly displays native region panels with a synthetic settings window visible and hidden. It checks the foreground process identity, key-window ownership, cancellation and drag handlers without screen capture or external content queries. Run it in a GUI session with another app in front. For the end-to-end check, leave QuietSelection settings open in the background, focus a synthetic document in another app, then try Control + Escape followed by Escape and by region selection. Settings must stay in the background; typing/arrow keys must work in the source window immediately afterward. Repeat with settings closed.
+
 ## Local configuration
 
 `.local/` is ignored by Git:

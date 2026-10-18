@@ -44,6 +44,11 @@ struct SpeechTests {
         precondition(speech.preparedUtterances(for: cases[0].0)?.first?.voice?.identifier == speech.voiceID)
         precondition(speech.preparedUtterances(for: cases[0].0)?.first?.rate == 0.66)
         speech.automatic = true
+        let primary = speech.primaryUtterance(cases[1].0, voiceID: speech.voicesByLanguage["ru"], rate: 0.58)!
+        precondition(primary.voice?.identifier == speech.voicesByLanguage["ru"] && primary.rate == 0.58)
+        precondition(primary.speechString == cases[1].0 && !primary.prefersAssistiveTechnologySettings)
+        precondition(speech.automatic && speech.voiceID == speech.voicesByLanguage["ja"] && speech.rate == 0.66)
+        precondition(speech.primaryUtterance("Synthetic", voiceID: "missing", rate: 0.5) == nil)
         speech.voicesByLanguage["en"] = "missing"
         precondition(speech.preparedUtterances(for: cases[1].0) == nil)
         print("speech_plan=PASS exact_voices, per_language_rates, mixed_text, primary_fallback, manual_mode, missing_voice_no_substitution")

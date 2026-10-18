@@ -16,7 +16,7 @@ QuietSelection is an accessibility tool built for everyday reading without disru
 
 The project started as a replacement for macOS “Speak selection”: in the user's Safari and Apple Mail setup, invoking that feature changed subsequent arrow-key scrolling into text navigation. QuietSelection uses its own selection-reading and speech paths, without invoking the system Spoken Content controller. Safari and Mail behaviour has been checked manually on the development Mac; compatibility still depends on the application's accessibility implementation.
 
-When an application does not expose its selection, press **Control + Esc**, draw a screen region, and hear the text recognized locally. Escape cancels region selection. Both shortcuts are configurable from the available options.
+When an application does not expose its selection, press **Control + Esc**, draw a screen region, and hear the text recognized locally. Escape cancels region selection. All shortcuts are configured only in the Keyboard Shortcuts section.
 
 ### Speech settings
 
@@ -27,15 +27,25 @@ When an application does not expose its selection, press **Control + Esc**, draw
 - Local voice previews, optional launch at login, and a menu-bar settings window.
 - **Command + Q / Command + W close settings only.** Quitting the utility requires an explicit Quit action in its menu or settings window.
 
+### Read in the primary language and translate
+
+- **Control + Option + Esc** reads the original selection with the primary voice and rate, ignoring automatic detection for this reading only.
+- **Command + Esc** detects the language among the primary and enabled additional languages, translates into the primary language, then reads with its exact voice and rate. Already-primary text passes through unchanged. Uncertain fragments prompt for a language for this reading.
+- The **Translation** tab shows “Translate to”, “Translate from”, and actual model readiness. Its source list follows enabled additional languages even when automatic speech detection is switched off. Download buttons open Apple's explicit preparation UI; selected text is never supplied during preparation.
+- Translation uses Apple's on-device Translation framework, preferring the low-latency model on macOS 26.4+. Reading uses installed-only sessions and never starts a model download. Models are shared system resources; manage their removal in macOS Language & Region settings. Apple may change supported pairs.
+- Repeating any reading shortcut stops speech or cancels pending translation. The complete translation is prepared before speech begins.
+
+**Shortcut conflict:** macOS Accessibility Reader uses Command + Esc by default when enabled. This installation uses it for translation at the user's request; Command + Shift + Esc is an alternative. Control + Option is also a VoiceOver modifier. Registration failures preserve the previous working binding; no system shortcuts are changed.
+
 ### Privacy and permissions
 
-The application does not read or modify the clipboard, simulate copying, or send selected text or recognized images to a network service. It uses Apple frameworks for local speech, language detection, and OCR. Selected text, OCR text, and captured images are not written to logs or files.
+The application does not read or modify the clipboard, simulate copying, or send selected text or recognized images to a network service. It uses Apple frameworks for local speech, language detection, OCR, and translation. Selected text, OCR text, translations, and captured images are not written to logs or files.
 
 Accessibility permission is needed for selection reading in other applications. Screen Recording permission is needed for the explicitly selected OCR region. Permissions are granted by the user; the application does not reset accessibility settings or alter magnification and mouse settings. Some applications do not expose a usable selection; OCR is the alternative in those cases.
 
 ### Development
 
-Current minimum deployment target: **macOS 26.0**. You need Xcode or compatible Apple command-line tools providing the macOS 26 SDK, plus Python 3 for the build helpers. There are no third-party runtime packages. The interface is native Swift/AppKit; a scripted build produces the `.app` bundle without a generated Xcode project.
+Current minimum deployment target: **macOS 26.0**. You need Xcode or compatible Apple command-line tools providing the macOS 26.4+ SDK, plus Python 3 for the build helpers. There are no third-party runtime packages. The interface is native Swift/AppKit; a scripted build produces the `.app` bundle without a generated Xcode project.
 
 ```sh
 make test        # Run logic/privacy checks; compile native GUI, OCR and speech tests
@@ -73,7 +83,7 @@ QuietSelection — инструмент доступности для повсе
 
 Проект появился как замена штатному «Проговариванию выбранного текста» macOS. В Safari и Apple Mail у пользователя после его запуска стрелки начинали перемещать курсор по тексту вместо обычной прокрутки. QuietSelection самостоятельно получает выделение и запускает синтез речи, не вызывая системный контроллер проговаривания. Сценарии Safari и Mail проверены пользователем на рабочем Mac; совместимость с другими приложениями зависит от того, как они предоставляют выделение через API доступности.
 
-Если обычное выделение недоступно, нажмите **Control + Esc**, обведите область экрана мышью и прослушайте локально распознанный текст. Escape отменяет выбор области. Для обеих функций можно выбрать сочетание из предусмотренных вариантов.
+Если обычное выделение недоступно, нажмите **Control + Esc**, обведите область экрана мышью и прослушайте локально распознанный текст. Escape отменяет выбор области. Все сочетания настраиваются только в разделе «Сочетания клавиш».
 
 ### Настройки речи
 
@@ -84,15 +94,25 @@ QuietSelection — инструмент доступности для повсе
 - Прослушивание голосов, автозапуск по желанию пользователя и окно настроек через меню в строке меню macOS.
 - **Command + Q / Command + W закрывают только настройки.** Для полного выхода нужно явно выбрать пункт завершения в меню или нажать соответствующую кнопку окна.
 
+### Основной голос и перевод
+
+- **Control + Option + Esc** читает исходное выделение основным голосом с его скоростью, игнорируя автоопределение только для текущего чтения.
+- **Command + Esc** определяет язык среди основного и включённых дополнительных, переводит на основной и читает его голосом с его скоростью. Текст на основном языке проходит без перевода. Для неопределённых фрагментов приложение предлагает выбрать язык текущего чтения.
+- На вкладке **«Перевод»** находятся «Перевод на», «Перевод с» и фактическая готовность моделей. Список берётся из включённых дополнительных языков независимо от общего тумблера автоопределения речи. Кнопка загрузки открывает системную подготовку языков; выделенный текст ей не передаётся.
+- Используется локальный Translation framework Apple, на macOS 26.4+ — стратегия lowLatency. Команда чтения работает только с установленными моделями и не запускает загрузку. Модели общие для системы; удаляются через настройки macOS «Язык и регион». Доступность пар зависит от Apple.
+- Повторное сочетание чтения останавливает речь или отменяет перевод. Озвучивание начинается после подготовки всего результата.
+
+**Конфликт сочетаний:** Command + Esc по умолчанию используется Accessibility Reader, когда он включён. По выбору пользователя здесь это сочетание назначено переводу; доступна альтернатива Command + Shift + Esc. Control + Option также является модификатором VoiceOver. Если новое сочетание занято, прежнее рабочее назначение сохраняется. Системные настройки приложение не меняет.
+
 ### Приватность и разрешения
 
-Приложение не читает и не изменяет буфер обмена, не имитирует копирование и не отправляет выделенный текст или распознаваемые изображения в интернет. Синтез речи, определение языка и OCR выполняются локально средствами Apple. Выделенный и распознанный текст, а также снимки экрана не записываются в журналы или файлы.
+Приложение не читает и не изменяет буфер обмена, не имитирует копирование и не отправляет выделенный текст или распознаваемые изображения в интернет. Синтез речи, определение языка, перевод и OCR выполняются локально средствами Apple. Выделенный, распознанный и переведённый текст, а также снимки экрана не записываются в журналы или файлы.
 
 Для чтения выделения в других приложениях нужен «Универсальный доступ», для OCR выбранной области — разрешение «Запись экрана». Их выдаёт пользователь. Приложение не сбрасывает настройки доступности и не меняет увеличение экрана или параметры мыши. Если приложение не предоставляет пригодное выделение, можно использовать чтение области экрана.
 
 ### Разработка
 
-Минимальная целевая версия — **macOS 26.0**. Нужны Xcode либо совместимые инструменты командной строки Apple с SDK macOS 26, а также Python 3 для вспомогательных скриптов. Сторонних пакетов времени выполнения нет. Приложение написано на Swift/AppKit; скрипт собирает пакет `.app` без генерируемого проекта Xcode.
+Минимальная целевая версия — **macOS 26.0**. Нужны Xcode либо совместимые инструменты командной строки Apple с SDK macOS 26.4+, а также Python 3 для вспомогательных скриптов. Сторонних пакетов времени выполнения нет. Приложение написано на Swift/AppKit; скрипт собирает пакет `.app` без генерируемого проекта Xcode.
 
 ```sh
 make test        # Проверки логики и приватности; сборка тестов интерфейса, OCR и речи

@@ -15,7 +15,9 @@ All application sources are in `Sources/QuietSelection/`.
 | `LocalSelection.swift` | Selection from the app's own focused native text control |
 | `Speech.swift` | Installed Apple voices and local AVSpeechSynthesizer utterances |
 | `VoiceSettings.swift`, `LanguagePlan.swift` | Per-language voices/rates, primary language, restricted sentence-level detection |
-| `ScreenOCR.swift`, `RegionPicker.swift`, `RegionFocus.swift` | Explicit region capture, local OCR and focus restoration |
+| `ScreenOCR.swift`, `RegionPicker.swift`, `RegionFocus.swift` | Explicit region capture, local OCR and focus restoration; nonactivating panels keep open settings in the background |
+| `TranslationPlan.swift`, `LocalTranslation.swift` | Restricted source detection, all-pair preflight, ordered local translation and cancellation |
+| `TranslationSettingsView.swift`, `SourceLanguageChooser.swift` | Model readiness, explicit preparation, per-reading uncertain-language choice |
 | `SettingsWindow.swift`, `SpeechSettingsView.swift`, `SettingsStyle.swift` | Native settings UI and muted appearance |
 
 ## Data flow and invariants
@@ -39,3 +41,11 @@ The settings window's additional-language list is height-constrained and scrolls
 Приложение состоит из независимых частей: получение выделения, локальная речь, OCR выбранной области, настройки и системные сочетания. `App.swift` связывает их между собой. Ресурсы пакета находятся в `Resources/`, проверки — в `Tests/`, вспомогательные команды — в `Scripts/`.
 
 Ключевые ограничения: не использовать буфер обмена и имитацию копирования, не читать страницу или дерево доступности целиком вместо выделения, не отправлять пользовательский текст в сеть и не сохранять его на диск. OCR запускается только после явного выбора области. Основной язык отвечает и за ручной режим, и за неуверенное автоопределение; голос и скорость задаются для каждого языка отдельно.
+
+## Translation
+
+The primary-only command bypasses automatic speech planning without mutating saved preferences. Translation shares the existing narrow selection path. It snapshots the target, voice and rate, splits sentences using the restricted language plan, and asks for a source only for uncertain fragments. Primary-language and non-letter fragments pass through. All foreign pairs must be installed before any translation; all results complete before speech. Cancellation uses task cancellation, session cancellation and generation tickets to discard stale completions.
+
+`TranslationSession(installedSource:target:)` cannot request downloads. On macOS 26.4+ both readiness and sessions explicitly select `.lowLatency`; older supported systems use the original translation API. A separate visible SwiftUI `.translationTask` calls `prepareTranslation()` after a download button click, then translates a fixed synthetic phrase in that same download-capable task before checking installed-only readiness. That session never receives user text. Readiness uses `LanguageAvailability` for support and `isReady` on an installed-only session for actual readiness, not guessed model files; statuses describe language pairs. `prepareTranslation()` may return while downloading: the visible task keeps a stable state-owned configuration and waits for installed-only readiness, with cancellable polling and no fixed download deadline, so slow connections are not treated as failures. A returned preparation call never marks a pair ready by itself. No model deletion or file scanning API is used.
+
+Tests use a fake translation backend for ordering, missing/unsupported models, primary pass-through and cancellation. Real model preparation and translation require explicit user checks on the installed signed application; these are not claimed by the fake-backend tests.

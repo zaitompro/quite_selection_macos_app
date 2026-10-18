@@ -7,6 +7,7 @@ test:
 	bash Scripts/test.sh
 
 test-gui: test
+	build/RegionPickerTests
 	build/LocalSelectionTests
 	build/WindowTests
 	build/OCRTests

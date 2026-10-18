@@ -35,6 +35,8 @@ struct WindowTests {
                 delegate.controller.update(voices: voices, selection: selection, automatic: true,
                     testShortcut: false, login: "enabled", trusted: true)
                 delegate.controller.updateScreenReading(shortcut: .controlEscape, registered: true, permitted: true)
+                delegate.controller.translationSettings.update(target: "ru", sources: ["en", "ja"], states: ["en": .supported, "ja": .supported])
+                delegate.controller.updateExtraShortcuts(primary: .controlOptionEscape, primaryRegistered: true, translation: .commandEscape, translationRegistered: true)
                 try! delegate.controller.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
             }
             exit(0)
@@ -132,6 +134,25 @@ struct WindowTests {
         precondition(speechUI.cards.isEmpty && speechUI.list.frame.height == originalHeight)
         delegate.controller.selectSection(0)
         print("speech_ui=PASS per_language_controls, rightmost_switch, fixed_height_add_remove_empty, independent_scroll")
+
+        let translationUI = delegate.controller.translationSettings
+        delegate.controller.selectSection(2)
+        translationUI.update(target: "ru", sources: ["en", "ja", "de", "fr"],
+            states: ["en": .supported, "ja": .installed, "de": .unsupported])
+        window.contentView!.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        precondition(abs(translationUI.list.frame.height - 240) < 1)
+        precondition(translationUI.list.documentView!.frame.height > translationUI.list.contentView.bounds.height)
+        precondition(translationUI.downloadButtons["ja"]!.isHidden && translationUI.downloadButtons["de"]!.isHidden)
+        precondition(!translationUI.downloadButtons["fr"]!.isEnabled)
+        var downloadSource: String?
+        translationUI.onDownload = { downloadSource = $0 }
+        translationUI.downloadButtons["en"]!.performClick(nil)
+        precondition(downloadSource == "en")
+        translationUI.update(target: "en", sources: ["ru"], states: ["ru": .supported])
+        precondition(translationUI.downloadButtons["en"] == nil && translationUI.downloadButtons["ru"] != nil)
+        delegate.controller.selectSection(0)
+        print("translation_ui=PASS fixed_scroll, readiness_states, explicit_download, primary_change")
 
         // Local AppKit menu dispatch only: no posting or injecting keyboard events.
         func command(_ letter: String, code: UInt16) -> Bool {

@@ -68,3 +68,17 @@ enum OCRShortcut: Int, CaseIterable {
         UInt32(controlKey) | (self == .controlShiftEscape ? UInt32(shiftKey) : 0)
     }
 }
+
+enum PrimaryShortcut: Int, CaseIterable {
+    case controlOptionEscape, controlOptionR
+    var title: String { self == .controlOptionEscape ? "Control + Option + Esc" : "Control + Option + R" }
+    var keyCode: UInt32 { UInt32(self == .controlOptionEscape ? kVK_Escape : kVK_ANSI_R) }
+    var modifiers: UInt32 { UInt32(controlKey | optionKey) }
+}
+
+enum TranslationShortcut: Int, CaseIterable {
+    case commandEscape, commandShiftEscape
+    var title: String { self == .commandEscape ? "Command + Esc" : "Command + Shift + Esc" }
+    var keyCode: UInt32 { UInt32(kVK_Escape) }
+    var modifiers: UInt32 { UInt32(cmdKey) | (self == .commandShiftEscape ? UInt32(shiftKey) : 0) }
+}

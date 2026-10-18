@@ -8,7 +8,7 @@ private final class RegionPanel: NSPanel {
 @MainActor
 final class RegionPicker {
     private var panels: [NSPanel] = []
-    private var observers: [NSObjectProtocol] = []
+    private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private var completion: ((CGRect?) -> Void)?
     private let focus = RegionFocus(backend: MacRegionFocus())
     private var generation = 0
@@ -18,11 +18,14 @@ final class RegionPicker {
         guard !active else { return }
         generation += 1
         let ticket = generation
+        let sourcePID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         focus.begin()
         self.completion = completion
         guard let primaryTop = NSScreen.screens.first?.frame.maxY else { finish(nil); return }
         for screen in NSScreen.screens {
-            let panel = RegionPanel(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            // Borrow keyboard input for Esc without activating QuietSelection or
+            // raising its open settings window over the source application.
+            let panel = RegionPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = false
@@ -38,28 +41,51 @@ final class RegionPicker {
             panel.contentView = view
             panels.append(panel)
         }
-        NSApp.activate()
         for panel in panels { panel.orderFrontRegardless() }
         if let first = panels.first {
             first.makeKey()
             first.makeFirstResponder(first.contentView)
         }
         for name in [NSApplication.didResignActiveNotification, NSApplication.didChangeScreenParametersNotification] {
-            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            observe(name, center: .default) { [weak self] _ in
                 Task { @MainActor in
                     guard let self, self.generation == ticket else { return }
                     // A switch initiated by the user cancels the picker without
                     // returning them to the app from which they started.
                     self.finish(nil, restoreFocus: name != NSApplication.didResignActiveNotification)
                 }
-            })
+            }
         }
+        // With a nonactivating panel our app may already be inactive. Observe
+        // workspace activation as well, so a deliberate app switch still cancels.
+        observe(NSWorkspace.didActivateApplicationNotification, center: NSWorkspace.shared.notificationCenter) { [weak self] notification in
+            let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
+            Task { @MainActor in
+                guard let self, self.generation == ticket, let pid, pid != sourcePID else { return }
+                self.finish(nil, restoreFocus: false)
+            }
+        }
+        for panel in panels {
+            observe(NSWindow.didResignKeyNotification, center: .default, object: panel) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.generation == ticket,
+                          !self.panels.contains(where: { $0.isKeyWindow }) else { return }
+                    // Moving between screens keeps another picker panel key.
+                    // Moving away from the picker must not pull focus back.
+                    self.finish(nil, restoreFocus: false)
+                }
+            }
+        }
+    }
+    private func observe(_ name: Notification.Name, center: NotificationCenter, object: AnyObject? = nil,
+                         handler: @escaping @Sendable (Notification) -> Void) {
+        observers.append((center, center.addObserver(forName: name, object: object, queue: .main, using: handler)))
     }
     func cancel() { finish(nil) }
     private func finish(_ result: CGRect?, restoreFocus: Bool = true) {
         guard let done = completion else { return }
         completion = nil
-        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        for (center, observer) in observers { center.removeObserver(observer) }
         observers.removeAll()
         for panel in panels { panel.orderOut(nil) }
         panels.removeAll()
@@ -73,6 +99,7 @@ private final class RegionView: NSView {
     private var start: CGPoint?
     private var current: CGPoint?
     override var acceptsFirstResponder: Bool { true }
+    override var needsPanelToBecomeKey: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
     override func mouseDown(with event: NSEvent) {
