@@ -1,0 +1,27 @@
+# Local builds, test renders, reports and archives
+/build/
+/.build/
+/DerivedData/
+*.app/
+*.dSYM/
+
+# Machine-specific signing and installation configuration
+/.local/
+/Signing/
+*.key
+*.pem
+*.p12
+*.pfx
+*.keychain
+*.keychain-db
+.env
+.env.*
+
+# Editor and OS metadata
+.DS_Store
+xcuserdata/
+*.xcuserstate
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
