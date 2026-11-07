@@ -40,6 +40,30 @@ import Foundation
         check(PointerPolicy.validated(" \n") == nil && PointerPolicy.validated(nil) == nil, "empty rejected")
         check(PointerPolicy.validated(String(repeating: "x", count: 5), limit: 4) == nil, "over limit rejected")
         check(!SelectionFailure.nothingUnderPointer.message.isEmpty, "failure message exists")
+        // Choosing between the selection and the paragraph under the pointer.
+        let inside = CGPoint(x: 150, y: 220), outside = CGPoint(x: 150, y: 600)
+        check(PointerPolicy.choose(selection: "Выделено", selectionBounds: selection, pointer: inside, pointerParagraph: nil) == .selection,
+              "known bounds, pointer inside: selection")
+        check(PointerPolicy.choose(selection: "Выделено", selectionBounds: selection, pointer: outside, pointerParagraph: "Другой абзац") == .pointer,
+              "known bounds, pointer elsewhere: paragraph")
+        check(PointerPolicy.choose(selection: "Выделено", selectionBounds: selection, pointer: outside, pointerParagraph: nil) == .nothing,
+              "known bounds, nothing under pointer: failure")
+        check(PointerPolicy.choose(selection: "часть второго абзаца", selectionBounds: nil, pointer: outside,
+                                   pointerParagraph: "Это часть второго абзаца целиком.") == .selection,
+              "unknown bounds, pointer on the selected paragraph: selection")
+        check(PointerPolicy.choose(selection: "Выделенный текст первого абзаца", selectionBounds: nil, pointer: outside,
+                                   pointerParagraph: "Совсем другой абзац ниже.") == .pointer,
+              "unknown bounds, other paragraph: paragraph (Electron)")
+        check(PointerPolicy.choose(selection: "Выделено", selectionBounds: nil, pointer: outside, pointerParagraph: nil) == .selection,
+              "unknown bounds, nothing under pointer: selection")
+        check(PointerPolicy.choose(selection: nil, selectionBounds: nil, pointer: outside, pointerParagraph: "Абзац") == .pointer,
+              "no selection: paragraph")
+        check(PointerPolicy.choose(selection: nil, selectionBounds: nil, pointer: outside, pointerParagraph: nil) == .nothing,
+              "no selection, nothing under pointer: failure")
+        check(PointerPolicy.overlaps("Первая строка выделения\nВторая строка выделения", "Абзац: вторая  строка ВЫДЕЛЕНИЯ и ещё"),
+              "multi-paragraph selection matches one of its paragraphs, ignoring case and spaces")
+        check(PointerPolicy.overlaps("да", "Где-то да, а где-то нет"), "short selection inside the paragraph counts")
+        check(!PointerPolicy.overlaps("Короткая строка\nещё", "Ничего общего здесь нет"), "no shared text")
         print("\(count) checks passed; no pointer, screen or application used.")
     }
 }

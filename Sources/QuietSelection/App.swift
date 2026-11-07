@@ -435,25 +435,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 // The pointer over the selection reads the selection; anywhere else
                 // the paragraph under the pointer is read (nothing there: failure).
                 if let pointer, NSWorkspace.shared.frontmostApplication?.processIdentifier == frontPID {
-                    var usesSelection = false
-                    if case .success = result {
-                        usesSelection = viaCopy
-                            || PointerPolicy.readsSelection(selectionBounds: backend.selectionBounds(), pointer: pointer.point)
-                    }
-                    if !usesSelection {
-                        viaPointer = true
+                    let selected = try? result.get()
+                    let bounds = selected != nil && !viaCopy ? backend.selectionBounds() : nil
+                    let overSelection = bounds.map { PointerPolicy.readsSelection(selectionBounds: $0, pointer: pointer.point) } ?? false
+                    var pointerResult: Result<String, Error>?
+                    if !overSelection {
                         if SecureInput.blocks(target: pointer.pid) {
-                            result = .failure(SelectionFailure.secureKeyboard)
+                            pointerResult = .failure(SelectionFailure.secureKeyboard)
                         } else {
-                            result = Result { try PointerTextReader().read(pointer) }
+                            pointerResult = Result { try PointerTextReader().read(pointer) }
                             // Chromium builds web accessibility on the first query.
-                            if pointerChromium, case .failure = result,
+                            if pointerChromium, case .failure = pointerResult!,
                                (try? AccessibilityBackend(pid: pointer.pid, allowsAccessibilityPreparation: true)
                                    .prepareApplicationAccessibility()) == true,
                                let fresh = pointer.refreshed() {
-                                result = Result { try PointerTextReader().read(fresh) }
+                                pointerResult = Result { try PointerTextReader().read(fresh) }
                             }
                         }
+                    }
+                    switch PointerPolicy.choose(selection: selected, selectionBounds: bounds, pointer: pointer.point,
+                                                pointerParagraph: try? pointerResult?.get()) {
+                    case .selection:
+                        break
+                    case .pointer:
+                        viaPointer = true
+                        result = pointerResult!
+                    case .nothing:
+                        viaPointer = true
+                        result = pointerResult ?? .failure(SelectionFailure.nothingUnderPointer)
+                        if case .success = result { result = .failure(SelectionFailure.nothingUnderPointer) }
                     }
                 }
             }

@@ -15,6 +15,39 @@ enum PointerPolicy {
         return bounds.insetBy(dx: -selectionMargin, dy: -selectionMargin).contains(pointer)
     }
 
+    enum Choice: Equatable { case selection, pointer, nothing }
+
+    /// Which text to read when a selection exists and/or the pointer has a paragraph.
+    /// - Known selection bounds decide by position (outside with nothing under
+    ///   the pointer: nothing, which plays the failure sound).
+    /// - Unknown bounds (for example Electron apps, or text from the copy
+    ///   fallback): the paragraph under the pointer is compared with the
+    ///   selection; matching text means the pointer is over the selection.
+    static func choose(selection: String?, selectionBounds: CGRect?, pointer: CGPoint,
+                       pointerParagraph: String?) -> Choice {
+        guard let selection else { return pointerParagraph == nil ? .nothing : .pointer }
+        if let bounds = selectionBounds, !bounds.isNull, !bounds.isEmpty {
+            if readsSelection(selectionBounds: bounds, pointer: pointer) { return .selection }
+            return pointerParagraph == nil ? .nothing : .pointer
+        }
+        guard let paragraph = pointerParagraph else { return .selection }
+        return overlaps(selection, paragraph) ? .selection : .pointer
+    }
+
+    /// True when the paragraph and the selection share text: one contains the
+    /// other, or a reasonably long line of the selection appears in the paragraph.
+    static func overlaps(_ selection: String, _ paragraph: String) -> Bool {
+        let a = normalized(selection), b = normalized(paragraph)
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        if a.contains(b) || b.contains(a) { return true }
+        let lines = selection.split(whereSeparator: { $0.isNewline }).map { normalized(String($0)) }
+        return lines.contains { $0.count >= 8 && b.contains($0) }
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
+    }
+
     /// Characters read on each side of the pointer to find its paragraph; only
     /// this window is requested from the application, never the whole document.
     static let paragraphRadius = 4_000
