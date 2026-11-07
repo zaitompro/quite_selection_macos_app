@@ -30,6 +30,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     var onRefresh: (() -> Void)?
     var onAddCopyApp: ((String) -> Void)?
     var onPointerReading: ((Bool) -> Void)?
+    var onCopyReading: ((Bool) -> Void)?
+    var onFlagShortcutChange: ((FlagAction, Shortcut) -> Void)?
     var onRemoveCopyApp: ((String) -> Void)?
 
     let speechSettings = SpeechSettingsView(frame: .zero)
@@ -51,6 +53,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     private let screenShortcut = NSTextField(labelWithString: "")
     private let loginSwitch = SettingsSwitch(frame: .zero)
     let pointerSwitch = SettingsSwitch(frame: .zero)
+    let copySwitch = SettingsSwitch(frame: .zero)
+    private(set) var flagRecorders: [FlagAction: ShortcutRecorder] = [:]
+    private var flagWarnings: [FlagAction: NSTextField] = [:]
     private let loginNote = SettingsUI.caption("")
     private var loginSettings: NSButton!
     private var accessibilityPermission: PermissionRow!
@@ -149,9 +154,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         for index in 0..<ShortcutSlot.count {
             let recorder = ShortcutRecorder(actionTitle: "сочетание \(index + 1)")
             recorder.onRecord = { [weak self] in self?.onShortcutChange?(index, $0) }
-            recorder.onRecordingChanged = { [weak self] recording in
+            recorder.onRecordingChanged = { [weak self, unowned recorder] recording in
                 guard let self else { return }
-                if recording { for (other, view) in self.recorders where other != index { view.stop() } }
+                if recording { self.stopRecording(except: recorder) }
                 self.shortcutHint.stringValue = recording
                     ? "Введите сочетание: нужна клавиша Command, Option или Control. Esc — отмена." : ""
                 self.onShortcutRecording?(recording)
@@ -188,6 +193,34 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         thresholdSlider.setAccessibilityLabel("Время удержания для долгого нажатия")
         thresholdValue.font = .monospacedDigitSystemFont(ofSize: SettingsUI.bodySize, weight: .medium)
         thresholdValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        var flagRows: [NSView] = []
+        for flag in FlagAction.allCases {
+            let recorder = ShortcutRecorder(actionTitle: flag.title)
+            recorder.onRecord = { [weak self] in self?.onFlagShortcutChange?(flag, $0) }
+            recorder.onRecordingChanged = { [weak self, unowned recorder] recording in
+                guard let self else { return }
+                if recording { self.stopRecording(except: recorder) }
+                self.shortcutHint.stringValue = recording
+                    ? "Введите сочетание: нужна клавиша Command, Option или Control. Esc — отмена." : ""
+                self.onShortcutRecording?(recording)
+            }
+            recorder.onInvalid = { [weak self] in
+                self?.shortcutHint.stringValue = "Нужна хотя бы одна из клавиш Command, Option или Control. Esc — отмена."
+            }
+            let reset = SettingsUI.iconButton("arrow.counterclockwise", label: "Вернуть сочетание по умолчанию: " + flag.title,
+                                              target: self, action: #selector(resetFlagShortcut(_:)))
+            reset.tag = FlagAction.allCases.firstIndex(of: flag)!
+            let warning = SettingsUI.caption("")
+            warning.isHidden = true
+            flagRecorders[flag] = recorder
+            flagWarnings[flag] = warning
+            flagRows.append(SettingsUI.row(flag.title, caption: warning, controls: [recorder, reset]))
+        }
+        views += [
+            SettingsUI.groupTitle("Переключатели"),
+            SettingsUI.caption("Нажатие включает или выключает настройку; программа произносит новое состояние основным голосом."),
+            SettingsUI.card(flagRows)
+        ]
         doubleSlider.target = self
         doubleSlider.action = #selector(doubleIntervalChanged)
         doubleSlider.isContinuous = true
@@ -238,10 +271,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         copyAddButton.font = .systemFont(ofSize: SettingsUI.bodySize)
         copyAddButton.setAccessibilityLabel("Добавить приложение для чтения через копирование")
         copyAddButton.setContentHuggingPriority(.required, for: .horizontal)
+        copySwitch.target = self
+        copySwitch.action = #selector(copyReadingChanged)
+        copySwitch.setAccessibilityLabel("Чтение через копирование")
         let header = NSStackView(views: [SettingsUI.groupTitle("Приложения"), NSView(), copyAddButton])
         header.orientation = .horizontal
         return SettingsUI.page([
             SettingsUI.pageTitle("Чтение через копирование"),
+            SettingsUI.card([SettingsUI.row("Включено", caption: SettingsUI.caption("Для всех приложений из списка ниже"),
+                                            controls: [copySwitch])]),
             SettingsUI.caption("Для приложений, которые показывают выделение, но не передают его системе (например, Telegram). Если обычное чтение не удалось, QuietSelection просит приложение скопировать выделенный текст и сразу возвращает прежнее содержимое буфера обмена."),
             header,
             copyAppsCard,
@@ -389,6 +427,26 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
 
     func updatePointerReading(_ enabled: Bool) { pointerSwitch.state = enabled ? .on : .off }
 
+    func updateFlags(_ flags: [FlagAction: Shortcut], failed: Set<FlagAction>, copyReading: Bool) {
+        copySwitch.state = copyReading ? .on : .off
+        for flag in FlagAction.allCases {
+            flagRecorders[flag]?.shortcut = flags[flag]
+            let warning = flagWarnings[flag]
+            if failed.contains(flag) {
+                warning?.stringValue = "Не удалось назначить: сочетание занято. Выберите другое."
+                warning?.textColor = .systemOrange
+            } else {
+                warning?.stringValue = flags[flag]?.systemConflict ?? ""
+                warning?.textColor = .secondaryLabelColor
+            }
+            warning?.isHidden = warning?.stringValue.isEmpty ?? true
+        }
+    }
+
+    private func stopRecording(except active: ShortcutRecorder) {
+        for view in Array(recorders.values) + Array(flagRecorders.values) where view !== active { view.stop() }
+    }
+
     func updatePermissions(accessibility: Bool, screen: Bool) {
         accessibilityPermission.update(granted: accessibility)
         screenPermissionGeneral.update(granted: screen)
@@ -523,7 +581,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     }
     func windowWillClose(_ notification: Notification) {
         presentationPending = false
-        for recorder in recorders.values { recorder.stop() }
+        for recorder in Array(recorders.values) + Array(flagRecorders.values) { recorder.stop() }
     }
     func windowDidBecomeKey(_ notification: Notification) { onRefresh?() }
     func closeSettings() { window?.performClose(nil) }
@@ -632,6 +690,12 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     @objc private func stop() { onStop?() }
     @objc private func quit() { onQuit?() }
     @objc private func pointerChanged() { onPointerReading?(pointerSwitch.state == .on) }
+    @objc private func copyReadingChanged() { onCopyReading?(copySwitch.state == .on) }
+    @objc private func resetFlagShortcut(_ sender: NSButton) {
+        let flags = FlagAction.allCases
+        guard flags.indices.contains(sender.tag) else { return }
+        onFlagShortcutChange?(flags[sender.tag], flags[sender.tag].defaultShortcut)
+    }
     @objc private func copyAppAdded(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? String { onAddCopyApp?(id) }
     }

@@ -80,6 +80,30 @@ import Foundation
               && ShortcutSettings.doubleInterval(NSNumber(value: 2)) == 0.6, "double interval limits")
         check(ReadFunction(rawValue: "screenRegion") == .regionRead, "1.10 raw value still valid")
 
+        // Flags: Control + Num 1…3, spoken state, no shared keys.
+        check(FlagAction.automaticLanguage.defaultShortcut.title { _ in nil } == "Control + Num 1"
+              && FlagAction.copyReading.defaultShortcut.title { _ in nil } == "Control + Num 2"
+              && FlagAction.readUnderPointer.defaultShortcut.title { _ in nil } == "Control + Num 3", "flag defaults")
+        check(FlagAction.readUnderPointer.announcement(false) == "Чтение под курсором: выключено"
+              && FlagAction.automaticLanguage.announcement(true) == "Автоопределение языка: включено", "spoken state")
+        check(Set(FlagAction.allCases.map(\.hotKeyID)).isDisjoint(with: (0..<ShortcutSlot.count).map(ShortcutSlot.hotKeyID)),
+              "flag hot key identifiers apart from slots")
+        let flagDefaults = FlagSettings.load(saved: nil, slots: fresh)
+        check(flagDefaults.count == 3, "all flags assigned by default")
+        let custom9 = Shortcut(keyCode: 92, modifiers: Shortcut.control)
+        let savedFlags = FlagSettings.load(saved: FlagSettings.preferenceValue([.copyReading: custom9]), slots: fresh)
+        check(savedFlags[.copyReading] == custom9 && savedFlags[.automaticLanguage] == FlagAction.automaticLanguage.defaultShortcut,
+              "saved flag shortcut kept, others default")
+        var clashing = fresh
+        clashing[2].shortcut = FlagAction.readUnderPointer.defaultShortcut
+        check(FlagSettings.load(saved: nil, slots: clashing)[.readUnderPointer] == nil, "flag sharing a reading shortcut stays unassigned")
+        check(FlagSettings.owner(of: fresh[0].shortcut!, slots: fresh, flags: flagDefaults) == "сочетание 1", "slot owner named")
+        check(FlagSettings.owner(of: FlagAction.copyReading.defaultShortcut, slots: fresh, flags: flagDefaults)
+              == "«Чтение через копирование»", "flag owner named")
+        check(FlagSettings.owner(of: FlagAction.copyReading.defaultShortcut, slots: fresh, flags: flagDefaults, exceptFlag: .copyReading) == nil,
+              "own shortcut is no conflict")
+        check(FlagSettings.owner(of: fresh[0].shortcut!, slots: fresh, flags: flagDefaults, exceptSlot: 0) == nil, "own slot is no conflict")
+
         // System overlaps.
         check(optionEsc.systemConflict != nil, "Speak Selection overlap explained")
         check(Shortcut(keyCode: 15, modifiers: Shortcut.command | Shortcut.shift).systemConflict == nil, "no warning for unrelated keys")

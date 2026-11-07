@@ -155,6 +155,63 @@ struct ShortcutSlot: Equatable {
     }
 }
 
+/// On/off settings that can be switched from the keyboard, with a spoken confirmation.
+enum FlagAction: String, CaseIterable {
+    case automaticLanguage, copyReading, readUnderPointer
+
+    var title: String {
+        switch self {
+        case .automaticLanguage: return "Автоопределение языка"
+        case .copyReading: return "Чтение через копирование"
+        case .readUnderPointer: return "Чтение под курсором"
+        }
+    }
+
+    func announcement(_ enabled: Bool) -> String { title + ": " + (enabled ? "включено" : "выключено") }
+
+    /// Control + Num 1…3 (Control + Num 0 is the repeat shortcut).
+    var defaultShortcut: Shortcut {
+        let keypad: [FlagAction: UInt32] = [.automaticLanguage: 83, .copyReading: 84, .readUnderPointer: 85]
+        return Shortcut(keyCode: keypad[self]!, modifiers: Shortcut.control)
+    }
+
+    var hotKeyID: UInt32 { 100 + UInt32(Self.allCases.firstIndex(of: self)!) }
+}
+
+enum FlagSettings {
+    static let preferenceKey = "FlagShortcuts"
+
+    /// Saved flag shortcuts, defaults for missing ones; any that would share keys
+    /// with a reading shortcut or another flag stay unassigned.
+    static func load(saved: [String: Any]?, slots: [ShortcutSlot]) -> [FlagAction: Shortcut] {
+        var taken = Set(slots.compactMap(\.shortcut))
+        var result: [FlagAction: Shortcut] = [:]
+        for flag in FlagAction.allCases {
+            let candidate = Shortcut(preferenceValue: saved?[flag.rawValue]) ?? flag.defaultShortcut
+            guard !taken.contains(candidate) else { continue }
+            taken.insert(candidate)
+            result[flag] = candidate
+        }
+        return result
+    }
+
+    static func preferenceValue(_ flags: [FlagAction: Shortcut]) -> [String: [String: Int]] {
+        Dictionary(uniqueKeysWithValues: flags.map { ($0.key.rawValue, $0.value.preferenceValue) })
+    }
+
+    /// Name of whatever already uses `shortcut`, other than the item being changed.
+    static func owner(of shortcut: Shortcut, slots: [ShortcutSlot], flags: [FlagAction: Shortcut],
+                      exceptSlot: Int? = nil, exceptFlag: FlagAction? = nil) -> String? {
+        if let index = slots.indices.first(where: { $0 != exceptSlot && slots[$0].shortcut == shortcut }) {
+            return "сочетание \(index + 1)"
+        }
+        if let flag = FlagAction.allCases.first(where: { $0 != exceptFlag && flags[$0] == shortcut }) {
+            return "«\(flag.title)»"
+        }
+        return nil
+    }
+}
+
 enum ShortcutSettings {
     static let preferenceKey = "ShortcutSlots"
     /// 2: source per shortcut, mode per gesture (version 1.11).

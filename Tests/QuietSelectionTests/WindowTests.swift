@@ -187,8 +187,19 @@ struct WindowTests {
         precondition(!recorders[2]!.recording && recorders[0]!.recording)
         recorders[0]!.stop()
         precondition(!recorders[0]!.recording && recordingEvents.last == false && recorders[0]!.title == "Option + Esc")
+        var flagValues = FlagSettings.load(saved: nil, slots: slots)
+        flagValues[.copyReading] = nil
+        delegate.controller.updateFlags(flagValues, failed: [.automaticLanguage], copyReading: false)
+        let flagRecorders = delegate.controller.flagRecorders
+        precondition(flagRecorders.count == FlagAction.allCases.count)
+        precondition(flagRecorders[.readUnderPointer]!.title == "Control + Num 3" && flagRecorders[.copyReading]!.title == "Не назначено")
+        precondition(delegate.controller.copySwitch.state == .off)
+        flagRecorders[.readUnderPointer]!.performClick(nil)
+        recorders[1]!.performClick(nil)
+        precondition(!flagRecorders[.readUnderPointer]!.recording && recorders[1]!.recording)
+        recorders[1]!.stop()
         delegate.controller.selectSection(0)
-        print("shortcut_ui=PASS four_slots_single_double_long_menus_timings_single_recording")
+        print("shortcut_ui=PASS four_slots_single_double_long_menus_timings_single_recording_flags")
 
         // Local AppKit menu dispatch only: no posting or injecting keyboard events.
         func command(_ letter: String, code: UInt16) -> Bool {

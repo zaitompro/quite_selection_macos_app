@@ -48,6 +48,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     private var copyApps: [String] = []
     /// Read the paragraph under the pointer when it is not over the selection.
     private var readUnderPointer = true
+    /// Master switch for copy reading of the listed applications.
+    private var copyReadingEnabled = true
+    private var flags: [FlagAction: Shortcut] = [:]
+    private var flagHotKeys: [FlagAction: HotKey] = [:]
+    private var failedFlags: Set<FlagAction> = []
 
     static func availableVoices() -> [VoiceChoice] {
         Speech.installedVoices().map {
@@ -67,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         automatic = preferences.bool(forKey: "AutomaticLanguage")
         copyApps = preferences.stringArray(forKey: "CopyFallbackApps") ?? []
         readUnderPointer = preferences.object(forKey: "ReadUnderPointer") as? Bool ?? true
+        copyReadingEnabled = preferences.object(forKey: "CopyFallbackEnabled") as? Bool ?? true
         applySpeechSettings()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "Читать"
@@ -93,9 +99,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 hotKeys[index] = key
             } catch { failedShortcuts.insert(index) }
         }
+        flags = FlagSettings.load(saved: preferences.dictionary(forKey: FlagSettings.preferenceKey), slots: slots)
+        for flag in FlagAction.allCases {
+            do {
+                let key = try HotKey(identifier: flag.hotKeyID)
+                key.onPress = { [weak self] in self?.toggle(flag) }
+                flagHotKeys[flag] = key
+            } catch { failedFlags.insert(flag) }
+        }
         registerAllShortcuts()
         saveShortcuts()
-        if !failedShortcuts.isEmpty {
+        if !failedShortcuts.isEmpty || !failedFlags.isEmpty {
             fail("Некоторые сочетания заняты другими приложениями. Назначьте другие в разделе «Сочетания клавиш».")
         }
         if CommandLine.arguments.contains("--show-settings") { showSettings() }
@@ -168,16 +182,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
             do { try key.register(shortcut); failedShortcuts.remove(index) }
             catch { failedShortcuts.insert(index) }
         }
+        for flag in FlagAction.allCases {
+            guard let key = flagHotKeys[flag] else { continue }
+            guard let shortcut = flags[flag] else { key.unregister(); continue }
+            do { try key.register(shortcut); failedFlags.remove(flag) }
+            catch { failedFlags.insert(flag) }
+        }
+    }
+
+    // MARK: Flags
+
+    private func flagState(_ flag: FlagAction) -> Bool {
+        switch flag {
+        case .automaticLanguage: return automatic
+        case .copyReading: return copyReadingEnabled
+        case .readUnderPointer: return readUnderPointer
+        }
+    }
+    private func setFlag(_ flag: FlagAction, _ enabled: Bool) {
+        switch flag {
+        case .automaticLanguage:
+            automatic = enabled
+            applySpeechSettings()
+        case .copyReading:
+            copyReadingEnabled = enabled
+            preferences.set(enabled, forKey: "CopyFallbackEnabled")
+        case .readUnderPointer:
+            readUnderPointer = enabled
+            preferences.set(enabled, forKey: "ReadUnderPointer")
+        }
+        refresh()
+    }
+    /// Keyboard toggle: switch, then say the new state with the primary voice.
+    private func toggle(_ flag: FlagAction) {
+        let enabled = !flagState(flag)
+        setFlag(flag, enabled)
+        if busy { stop() }
+        let spoken = speech.speakPrimary(flag.announcement(enabled), voiceID: selection.selectedVoice(in: voices)?.id,
+                                         rate: selection.rate(for: selection.language))
+        setStatus(flag.announcement(enabled))
+        if !spoken { Feedback.failure() }
+    }
+    private func changeFlagShortcut(_ flag: FlagAction, to requested: Shortcut) {
+        guard let key = flagHotKeys[flag] else { return }
+        defer { refresh() }
+        guard requested.isValid, flags[flag] != requested || failedFlags.contains(flag) else { return }
+        if let owner = FlagSettings.owner(of: requested, slots: slots, flags: flags, exceptFlag: flag) {
+            fail("«\(KeyNames.title(requested))» уже занято: \(owner). Прежнее сохранено.")
+            settings?.showShortcutMessage("Это сочетание уже используется: \(owner).")
+            return
+        }
+        do {
+            try key.register(requested)
+            flags[flag] = requested
+            failedFlags.remove(flag)
+            saveShortcuts()
+            setStatus("\(flag.title): \(KeyNames.title(requested))")
+            settings?.showShortcutMessage("")
+        } catch {
+            fail("«\(KeyNames.title(requested))» занято другим приложением или системой. Прежнее сохранено.")
+            settings?.showShortcutMessage("«\(KeyNames.title(requested))» занято другим приложением или системой.")
+            if let previous = flags[flag] { try? key.register(previous) }
+        }
     }
     private func saveShortcuts() {
         preferences.set(slots.map(\.preferenceValue), forKey: ShortcutSettings.preferenceKey)
         preferences.set(longPressThreshold, forKey: ShortcutSettings.thresholdKey)
         preferences.set(doublePressInterval, forKey: ShortcutSettings.doubleIntervalKey)
         preferences.set(ShortcutSettings.layoutVersion, forKey: ShortcutSettings.layoutKey)
+        preferences.set(FlagSettings.preferenceValue(flags), forKey: FlagSettings.preferenceKey)
     }
     /// While a new shortcut is recorded, the current ones must not fire.
     private func setShortcutRecording(_ recording: Bool) {
-        if recording { for key in hotKeys.values { key.unregister() } }
+        if recording { for key in Array(hotKeys.values) + Array(flagHotKeys.values) { key.unregister() } }
         else { registerAllShortcuts() }
         refresh()
     }
@@ -185,9 +262,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         guard let key = hotKeys[index] else { return }
         defer { refresh() }
         guard requested.isValid, slots[index].shortcut != requested || failedShortcuts.contains(index) else { return }
-        if let other = ShortcutSettings.conflict(for: index, shortcut: requested, in: slots) {
-            fail("«\(KeyNames.title(requested))» уже назначено сочетанию \(other + 1). Прежнее сохранено.")
-            settings?.showShortcutMessage("Это сочетание уже используется в строке \(other + 1).")
+        if let owner = FlagSettings.owner(of: requested, slots: slots, flags: flags, exceptSlot: index) {
+            fail("«\(KeyNames.title(requested))» уже занято: \(owner). Прежнее сохранено.")
+            settings?.showShortcutMessage("Это сочетание уже используется: \(owner).")
             return
         }
         do {
@@ -232,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         settings?.update(voices: voices, selection: selection, automatic: automatic, login: LoginLaunch.statusCode)
         settings?.updatePermissions(accessibility: AXIsProcessTrusted(), screen: CGPreflightScreenCaptureAccess())
         settings?.updatePointerReading(readUnderPointer)
+        settings?.updateFlags(flags, failed: failedFlags, copyReading: copyReadingEnabled)
         settings?.updateShortcuts(slots, failed: failedShortcuts, threshold: longPressThreshold,
                                   doubleInterval: doublePressInterval)
         settings?.setStatus(message, busy: busy)
@@ -333,12 +411,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
             }
             controller.onLoginSettings = { LoginLaunch.openSettings() }
             controller.onPermission = { [weak self] in self?.permission() }
-            controller.onPointerReading = { [weak self] enabled in
-                guard let self else { return }
-                self.readUnderPointer = enabled
-                self.preferences.set(enabled, forKey: "ReadUnderPointer")
-                self.refresh()
-            }
+            controller.onPointerReading = { [weak self] in self?.setFlag(.readUnderPointer, $0) }
+            controller.onCopyReading = { [weak self] in self?.setFlag(.copyReading, $0) }
+            controller.onFlagShortcutChange = { [weak self] in self?.changeFlagShortcut($0, to: $1) }
             controller.onAddCopyApp = { [weak self] id in
                 guard let self, !self.copyApps.contains(id) else { return }
                 self.setCopyApps(self.copyApps + [id])
@@ -399,7 +474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         // Application-role preparation only for Chromium browsers and Electron
         // apps; it was validated with ChatGPT/Codex (see focus-investigation).
         let allowsAccessibilityPreparation = ChromiumFamily.contains(app)
-        let allowsCopy = app.bundleIdentifier.map(copyApps.contains) ?? false
+        let allowsCopy = copyReadingEnabled && (app.bundleIdentifier.map(copyApps.contains) ?? false)
         // What is under the pointer, found now so the moment of the key press counts.
         let pointer = readUnderPointer ? PointerTarget.current().flatMap { $0.pid == ownPID ? nil : $0 } : nil
         let pointerChromium = pointer.flatMap { NSRunningApplication(processIdentifier: $0.pid) }
@@ -795,7 +870,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     }
     func applicationWillTerminate(_ notification: Notification) {
         stop(); availabilityTask?.cancel()
-        hotKeys.removeAll()
+        hotKeys.removeAll(); flagHotKeys.removeAll()
     }
     static let sampleText = "Это выбранный голос. Вы можете настроить удобную скорость чтения."
 }
