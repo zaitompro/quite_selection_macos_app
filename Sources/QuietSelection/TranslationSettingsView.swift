@@ -25,15 +25,16 @@ final class TranslationSettingsView: NSView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        let heading = Self.label("Перевод", size: 26, bold: true)
-        let targetTitle = Self.label("Перевод на", bold: true)
-        targetLabel.font = .systemFont(ofSize: 18, weight: .semibold)
-        let targetRow = TranslationCard(views: [targetTitle, NSView(), targetLabel])
-        targetRow.orientation = .horizontal
-        targetRow.edgeInsets = NSEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
-        let refresh = NSButton(title: "Проверить готовность", target: self, action: #selector(refreshPressed))
-        refresh.bezelStyle = .rounded
-        refresh.font = .systemFont(ofSize: 17)
+        let heading = SettingsUI.pageTitle("Перевод")
+        targetLabel.font = .systemFont(ofSize: SettingsUI.bodySize, weight: .semibold)
+        let targetRow = SettingsUI.card([
+            SettingsUI.row("Перевод на", caption: SettingsUI.caption("Основной язык; меняется в разделе «Речь»"),
+                           controls: [targetLabel])
+        ])
+        let refresh = SettingsUI.iconButton("arrow.clockwise", label: "Проверить готовность языков",
+                                            target: self, action: #selector(refreshPressed))
+        let sourcesHeader = NSStackView(views: [SettingsUI.groupTitle("Перевод с"), NSView(), refresh])
+        sourcesHeader.orientation = .horizontal
         rows.orientation = .vertical
         rows.alignment = .leading
         rows.spacing = 12
@@ -55,16 +56,15 @@ final class TranslationSettingsView: NSView {
             rows.bottomAnchor.constraint(lessThanOrEqualTo: document.bottomAnchor)
         ])
         let stack = NSStackView(views: [heading,
-            Self.label("Определить язык выделенного текста, перевести на основной язык и прочитать."),
+            SettingsUI.caption("Определить язык выделенного текста, перевести на основной язык и прочитать."),
             targetRow,
-            Self.label("Перевод с", bold: true),
-            Self.label("Список берётся из включённых дополнительных языков раздела «Речь».", size: 16),
-            list, refresh,
-            Self.label("macOS запросит разрешение на загрузку языков. После загрузки перевод выполняется на Mac без интернета.", size: 16),
-            Self.label("Если язык не определён — предложим выбрать его. Текст на основном языке читается без перевода.", size: 16)])
+            sourcesHeader,
+            SettingsUI.caption("Включённые дополнительные языки из раздела «Речь»."),
+            list,
+            SettingsUI.caption("Для загрузки языков macOS запросит разрешение; после загрузки перевод работает без интернета. Если язык не определён, программа предложит выбрать его; текст на основном языке читается без перевода.")])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 22
+        stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         for view in stack.views { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
@@ -74,7 +74,7 @@ final class TranslationSettingsView: NSView {
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    private static func label(_ text: String, size: CGFloat = 17, bold: Bool = false) -> NSTextField {
+    private static func label(_ text: String, size: CGFloat = SettingsUI.bodySize, bold: Bool = false) -> NSTextField {
         let view = NSTextField(wrappingLabelWithString: text)
         view.font = .systemFont(ofSize: size, weight: bold ? .semibold : .regular)
         view.isSelectable = true
@@ -90,31 +90,32 @@ final class TranslationSettingsView: NSView {
             for view in rows.views { rows.removeArrangedSubview(view); view.removeFromSuperview() }
             statusLabels.removeAll(); downloadButtons.removeAll()
             if sorted.isEmpty {
-                let empty = Self.label("Добавьте и включите дополнительные языки в разделе «Речь».")
+                let empty = SettingsUI.caption("Добавьте и включите дополнительные языки в разделе «Речь».")
                 rows.addArrangedSubview(empty)
                 empty.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
             }
             for (index, code) in sorted.enumerated() {
                 let name = Self.label(VoiceChoice.languageTitle(code) + " → " + VoiceChoice.languageTitle(target), bold: true)
-                let state = Self.label("Проверка…", size: 16)
+                let state = SettingsUI.caption("Проверка…")
                 let labels = NSStackView(views: [name, state])
-                labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 8
-                let download = NSButton(title: "Загрузить…", target: self, action: #selector(downloadPressed(_:)))
-                download.bezelStyle = .rounded; download.font = .systemFont(ofSize: 17); download.tag = index
+                labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 2
+                let download = SettingsUI.button("Загрузить…", target: self, action: #selector(downloadPressed(_:)))
+                download.tag = index
                 download.setAccessibilityLabel("Загрузить языки: " + name.stringValue)
                 download.setContentCompressionResistancePriority(.required, for: .horizontal)
                 let row = TranslationCard(views: [labels, NSView(), download])
                 row.orientation = .horizontal; row.spacing = 12
-                row.edgeInsets = NSEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
+                row.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
                 rows.addArrangedSubview(row)
                 row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
-                row.heightAnchor.constraint(greaterThanOrEqualToConstant: 88).isActive = true
+                row.heightAnchor.constraint(greaterThanOrEqualToConstant: 56).isActive = true
                 statusLabels[code] = state; downloadButtons[code] = download
             }
         }
         for code in sorted {
             let state = states[code] ?? .checking
             statusLabels[code]?.stringValue = state.title
+            statusLabels[code]?.textColor = state == .installed ? .systemGreen : .secondaryLabelColor
             downloadButtons[code]?.isHidden = state == .installed || state == .unsupported
             downloadButtons[code]?.isEnabled = state == .supported
         }

@@ -35,7 +35,7 @@ When an application does not expose its selection, press **Control + Esc**, draw
 - Translation uses Apple's on-device Translation framework, preferring the low-latency model on macOS 26.4+. Reading uses installed-only sessions and never starts a model download. Models are shared system resources; manage their removal in macOS Language & Region settings. Apple may change supported pairs.
 - Repeating any reading shortcut stops speech or cancels pending translation. The complete translation is prepared before speech begins.
 
-**Shortcut conflict:** macOS Accessibility Reader uses Command + Esc by default when enabled. This installation uses it for translation at the user's request; Command + Shift + Esc is an alternative. Control + Option is also a VoiceOver modifier. Registration failures preserve the previous working binding; no system shortcuts are changed.
+**Shortcut conflict:** macOS Accessibility Reader uses Command + Esc by default when enabled. This installation uses it for translation at the user's request. Every shortcut can be recorded freely in Settings → Keyboard Shortcuts (at least one of Command, Option or Control); a reset button restores the default. Two actions cannot share keys, overlaps with Speak Selection, Accessibility Reader and VoiceOver modifiers are pointed out, and keys taken by another app keep the previous working binding. No system shortcuts are changed.
 
 ### Privacy and permissions
 
@@ -102,7 +102,7 @@ QuietSelection — инструмент доступности для повсе
 - Используется локальный Translation framework Apple, на macOS 26.4+ — стратегия lowLatency. Команда чтения работает только с установленными моделями и не запускает загрузку. Модели общие для системы; удаляются через настройки macOS «Язык и регион». Доступность пар зависит от Apple.
 - Повторное сочетание чтения останавливает речь или отменяет перевод. Озвучивание начинается после подготовки всего результата.
 
-**Конфликт сочетаний:** Command + Esc по умолчанию используется Accessibility Reader, когда он включён. По выбору пользователя здесь это сочетание назначено переводу; доступна альтернатива Command + Shift + Esc. Control + Option также является модификатором VoiceOver. Если новое сочетание занято, прежнее рабочее назначение сохраняется. Системные настройки приложение не меняет.
+**Конфликт сочетаний:** Command + Esc по умолчанию используется Accessibility Reader, когда он включён. По выбору пользователя здесь это сочетание назначено переводу. Любое сочетание можно записать в «Настройки → Сочетания клавиш»: нажать на поле и ввести клавиши (нужна хотя бы одна из Command, Option, Control); кнопка рядом возвращает значение по умолчанию. Два действия не могут иметь одно сочетание; совпадения с «Проговариванием выбранного текста», Accessibility Reader и модификатором VoiceOver подсвечиваются. Если сочетание занято другим приложением, прежнее рабочее назначение сохраняется. Системные настройки приложение не меняет.
 
 ### Приватность и разрешения
 

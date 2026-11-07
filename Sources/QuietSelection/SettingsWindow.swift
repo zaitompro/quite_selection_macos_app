@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 private final class SettingsContentView: NSView {
     override var isFlipped: Bool { true }
@@ -13,10 +14,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     var onAllowed: ((String, Bool) -> Void)?
     var onAddLanguage: ((String) -> Void)?
     var onRemoveLanguage: ((String) -> Void)?
-    var onShortcut: ((Bool) -> Void)?
-    var onOCRShortcut: ((OCRShortcut) -> Void)?
-    var onPrimaryShortcut: ((PrimaryShortcut) -> Void)?
-    var onTranslationShortcut: ((TranslationShortcut) -> Void)?
+    var onShortcutChange: ((ShortcutAction, Shortcut) -> Void)?
+    var onShortcutRecording: ((Bool) -> Void)?
     var onReadRegion: (() -> Void)?
     var onScreenPermission: (() -> Void)?
     var onLogin: ((Bool) -> Void)?
@@ -31,35 +30,40 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
 
     let speechSettings = SpeechSettingsView(frame: .zero)
     let translationSettings = TranslationSettingsView(frame: .zero)
-    private let shortcutMenu = NSPopUpButton()
-    private let ocrShortcutMenu = NSPopUpButton()
-    private let primaryShortcutMenu = NSPopUpButton()
-    private let translationShortcutMenu = NSPopUpButton()
-    private let primaryShortcutNote = NSTextField(wrappingLabelWithString: "")
-    private let translationShortcutNote = NSTextField(wrappingLabelWithString: "")
-    private let screenPermissionNote = NSTextField(wrappingLabelWithString: "")
-    private let screenShortcutNote = NSTextField(wrappingLabelWithString: "")
+    private(set) var recorders: [ShortcutAction: ShortcutRecorder] = [:]
+    private var shortcutCaptions: [ShortcutAction: NSTextField] = [:]
+    private var shortcutWarnings: [ShortcutAction: NSTextField] = [:]
+    private var shortcuts: [ShortcutAction: Shortcut] = [:]
+    private let shortcutHint = SettingsUI.caption("")
+    private let screenShortcut = NSTextField(labelWithString: "")
     private let loginSwitch = SettingsSwitch(frame: .zero)
-    private let loginNote = NSTextField(wrappingLabelWithString: "")
-    private let permissionNote = NSTextField(wrappingLabelWithString: "")
+    private let loginNote = SettingsUI.caption("")
+    private var loginSettings: NSButton!
+    private var accessibilityPermission: PermissionRow!
+    private var screenPermissionGeneral: PermissionRow!
+    private var screenPermissionPage: PermissionRow!
     private let status = NSTextField(wrappingLabelWithString: "Готово")
-    private let copyAppsList = NSStackView()
-    private let copyAddMenu = NSPopUpButton()
+    private var stopButton: NSButton!
+    private let copyAppsCard = SettingsCard()
+    private let copyAddButton = NSPopUpButton(frame: .zero, pullsDown: true)
     private var copyAppIDs: [String] = []
     private var copyCandidateIDs: [String] = []
-    private var loginSettings: NSButton!
     private var pages: [NSView] = []
     private let tabs = NSTabView()
     private let navigation = NSTableView()
-    private let sectionTitles = ["Общие", "Речь", "Перевод", "Сочетания клавиш", "Чтение с экрана"]
+    private let sections: [(title: String, symbol: String)] = [
+        ("Общие", "gearshape"), ("Речь", "waveform"), ("Перевод", "character.bubble"),
+        ("Сочетания клавиш", "keyboard"), ("Чтение с экрана", "text.viewfinder"),
+        ("Копирование", "doc.on.clipboard")
+    ]
     private var scrollViews: [NSScrollView] = []
     private var presentationPending = false
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 980),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 780),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "QuietSelection — Настройки"
-        window.minSize = NSSize(width: 1000, height: 760)
+        window.minSize = NSSize(width: 820, height: 620)
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         super.init(window: window)
@@ -69,73 +73,123 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    private func label(_ text: String, size: CGFloat = 17, bold: Bool = false) -> NSTextField {
-        let result = NSTextField(wrappingLabelWithString: text)
-        result.isSelectable = true
-        result.font = .systemFont(ofSize: size, weight: bold ? .semibold : .regular)
-        result.textColor = .labelColor
-        return result
+    // MARK: Pages
+
+    private func generalPage() -> NSView {
+        loginSwitch.target = self
+        loginSwitch.action = #selector(loginChanged)
+        loginSwitch.setAccessibilityLabel("Запускать при входе в macOS")
+        loginSettings = SettingsUI.button("Настройки входа…", target: self, action: #selector(openLoginSettings))
+        accessibilityPermission = PermissionRow(title: "Универсальный доступ",
+            caption: "Нужен для чтения выделенного текста в других приложениях",
+            buttonTitle: "Открыть…", target: self, action: #selector(permission))
+        screenPermissionGeneral = PermissionRow(title: "Запись экрана",
+            caption: "Нужна только для чтения выбранной области экрана",
+            buttonTitle: "Открыть…", target: self, action: #selector(screenPermission))
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "тестовая сборка"
+        let quit = SettingsUI.button("Завершить QuietSelection", target: self, action: #selector(quit))
+        quit.setAccessibilityHelp("Полностью завершает программу. Command + Q закрывает только настройки.")
+        return SettingsUI.page([
+            SettingsUI.pageTitle("Общие"),
+            SettingsUI.card([
+                SettingsUI.row("Запускать при входе в macOS", caption: loginNote, controls: [loginSettings, loginSwitch])
+            ]),
+            SettingsUI.groupTitle("Разрешения"),
+            SettingsUI.card([accessibilityPermission.view, screenPermissionGeneral.view]),
+            SettingsUI.caption("Текст обрабатывается на Mac и не сохраняется в журнале. Буфер обмена используется только для приложений из раздела «Копирование»."),
+            SettingsUI.card([
+                SettingsUI.row("QuietSelection \(version)",
+                    caption: SettingsUI.caption("Command + Q и Command + W закрывают только окно настроек"),
+                    controls: [quit])
+            ])
+        ], spacing: 12)
     }
-    private func column(_ views: [NSView], spacing: CGFloat = 16) -> NSStackView {
-        let stack = NSStackView(views: views)
-        stack.orientation = .vertical
-        stack.distribution = .fill
-        stack.alignment = .leading
-        stack.spacing = spacing
-        for view in views { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
-        return stack
+
+    private func shortcutsPage() -> NSView {
+        var rows: [NSView] = []
+        for action in ShortcutAction.allCases {
+            let recorder = ShortcutRecorder(actionTitle: action.title)
+            recorder.onRecord = { [weak self] in self?.onShortcutChange?(action, $0) }
+            recorder.onRecordingChanged = { [weak self] recording in
+                guard let self else { return }
+                if recording { for (other, view) in self.recorders where other != action { view.stop() } }
+                self.shortcutHint.stringValue = recording
+                    ? "Введите сочетание: нужна клавиша Command, Option или Control. Esc — отмена." : ""
+                self.onShortcutRecording?(recording)
+            }
+            recorder.onInvalid = { [weak self] in
+                self?.shortcutHint.stringValue = "Нужна хотя бы одна из клавиш Command, Option или Control. Esc — отмена."
+            }
+            let reset = SettingsUI.iconButton("arrow.counterclockwise", label: "Вернуть сочетание по умолчанию: " + action.title,
+                                              target: self, action: #selector(resetShortcut(_:)))
+            reset.tag = ShortcutAction.allCases.firstIndex(of: action)!
+            let caption = SettingsUI.caption(action.caption)
+            let warning = SettingsUI.caption("")
+            warning.isHidden = true
+            let captions = NSStackView(views: [caption, warning])
+            captions.orientation = .vertical
+            captions.alignment = .leading
+            captions.spacing = 1
+            for view in [caption, warning] { view.widthAnchor.constraint(equalTo: captions.widthAnchor).isActive = true }
+            recorders[action] = recorder
+            shortcutCaptions[action] = caption
+            shortcutWarnings[action] = warning
+            rows.append(SettingsUI.row(action.title, caption: captions, controls: [recorder, reset]))
+        }
+        return SettingsUI.page([
+            SettingsUI.pageTitle("Сочетания клавиш"),
+            SettingsUI.card(rows),
+            shortcutHint,
+            SettingsUI.caption("Нажмите на сочетание и введите новое. Сочетания работают и при закрытом окне настроек; повторное нажатие останавливает чтение.")
+        ], spacing: 12)
     }
-    private func row(_ views: [NSView]) -> NSStackView {
-        let stack = NSStackView(views: views)
-        stack.orientation = .horizontal
-        stack.distribution = .fill
-        stack.alignment = .centerY
-        stack.spacing = 12
-        return stack
+
+    private func screenPage() -> NSView {
+        screenShortcut.font = .systemFont(ofSize: SettingsUI.bodySize, weight: .medium)
+        screenPermissionPage = PermissionRow(title: "Запись экрана",
+            caption: "Нужна для снимка выбранной области",
+            buttonTitle: "Открыть…", target: self, action: #selector(screenPermission))
+        return SettingsUI.page([
+            SettingsUI.pageTitle("Чтение с экрана"),
+            SettingsUI.caption("Для изображений и мест, где выделение текста недоступно."),
+            SettingsUI.card([
+                SettingsUI.row("Сочетание", caption: SettingsUI.caption("Меняется в разделе «Сочетания клавиш»"),
+                               controls: [screenShortcut]),
+                SettingsUI.row("Прочитать область сейчас",
+                               caption: SettingsUI.caption("Обведите текст мышью на одном мониторе; Esc — отмена"),
+                               controls: [SettingsUI.button("Выделить область…", target: self, action: #selector(readRegion))]),
+                screenPermissionPage.view
+            ]),
+            SettingsUI.caption("Распознавание выполняется на Mac. Изображение и текст не сохраняются и не отправляются в интернет. Язык, голос и скорость — из раздела «Речь»; лучше выделять один столбец текста.")
+        ], spacing: 12)
     }
-    private func button(_ title: String, _ action: Selector) -> NSButton {
-        let result = NSButton(title: title, target: self, action: action)
-        result.bezelStyle = .rounded
-        result.controlSize = .large
-        result.font = .systemFont(ofSize: 17)
-        return result
+
+    private func copyPage() -> NSView {
+        copyAppsCard.orientation = .vertical
+        copyAppsCard.alignment = .leading
+        copyAppsCard.spacing = 0
+        copyAppsCard.edgeInsets = NSEdgeInsets(top: 4, left: 14, bottom: 4, right: 14)
+        copyAppsCard.setAccessibilityLabel("Приложения для чтения через копирование")
+        copyAddButton.font = .systemFont(ofSize: SettingsUI.bodySize)
+        copyAddButton.setAccessibilityLabel("Добавить приложение для чтения через копирование")
+        copyAddButton.setContentHuggingPriority(.required, for: .horizontal)
+        let header = NSStackView(views: [SettingsUI.groupTitle("Приложения"), NSView(), copyAddButton])
+        header.orientation = .horizontal
+        return SettingsUI.page([
+            SettingsUI.pageTitle("Чтение через копирование"),
+            SettingsUI.caption("Для приложений, которые показывают выделение, но не передают его системе (например, Telegram). Если обычное чтение не удалось, QuietSelection просит приложение скопировать выделенный текст и сразу возвращает прежнее содержимое буфера обмена."),
+            header,
+            copyAppsCard,
+            SettingsUI.caption("Если буфер нельзя вернуть без потерь — пароль из менеджера паролей, файлы, больше 50 МБ, — он не трогается, и чтение отменяется. macOS может один раз спросить разрешение на доступ к буферу обмена.")
+        ], spacing: 12)
     }
-    private func switchRow(_ title: String, toggle: SettingsSwitch, action: Selector) -> NSView {
-        toggle.target = self
-        toggle.action = action
-        toggle.setAccessibilityLabel(title)
-        let titleLabel = label(title)
-        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        return row([titleLabel, toggle])
-    }
-    private func field(_ title: String, control: NSView) -> NSView {
-        let titleLabel = label(title, bold: true)
-        control.setAccessibilityLabel(title)
-        return column([titleLabel, control], spacing: 7)
-    }
+
+    // MARK: Window
+
     private func build() {
         guard let root = window?.contentView else { return }
         root.wantsLayer = true
-        for control in [shortcutMenu, ocrShortcutMenu, primaryShortcutMenu, translationShortcutMenu] {
-            control.controlSize = .large
-            control.font = .systemFont(ofSize: 17)
-            control.target = self
-            control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        }
-        for note in [loginNote, permissionNote, status, screenPermissionNote, screenShortcutNote, primaryShortcutNote, translationShortcutNote] {
-            note.isSelectable = true
-            note.font = .systemFont(ofSize: 16)
-            note.textColor = .labelColor
-        }
-        copyAppsList.orientation = .vertical
-        copyAppsList.alignment = .leading
-        copyAppsList.spacing = 8
-        copyAppsList.setAccessibilityLabel("Приложения для чтения через копирование")
-        copyAddMenu.controlSize = .large
-        copyAddMenu.font = .systemFont(ofSize: 17)
-        copyAddMenu.target = self
-        copyAddMenu.action = #selector(copyAppAdded)
-        copyAddMenu.setAccessibilityLabel("Добавить приложение для чтения через копирование")
+        for note in [loginNote] { note.isSelectable = true }
         speechSettings.onLanguage = { [weak self] in self?.onLanguage?($0) }
         speechSettings.onVoice = { [weak self] in self?.onVoice?($0, $1) }
         speechSettings.onRate = { [weak self] in self?.onRate?($0, $1) }
@@ -144,68 +198,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         speechSettings.onAdd = { [weak self] in self?.onAddLanguage?($0) }
         speechSettings.onRemove = { [weak self] in self?.onRemoveLanguage?($0) }
         speechSettings.onPreview = { [weak self] in self?.onPreview?($0) }
-        shortcutMenu.addItems(withTitles: ["Option + Esc", "Option + Shift + Esc"])
-        shortcutMenu.action = #selector(shortcutChanged)
-        ocrShortcutMenu.addItems(withTitles: OCRShortcut.allCases.map(\.title))
-        ocrShortcutMenu.action = #selector(ocrShortcutChanged)
-        ocrShortcutMenu.setAccessibilityLabel("Сочетание для распознавания области экрана")
-        primaryShortcutMenu.addItems(withTitles: PrimaryShortcut.allCases.map(\.title))
-        primaryShortcutMenu.action = #selector(primaryShortcutChanged)
-        primaryShortcutMenu.setAccessibilityLabel("Читать основным голосом")
-        translationShortcutMenu.addItems(withTitles: TranslationShortcut.allCases.map(\.title))
-        translationShortcutMenu.action = #selector(translationShortcutChanged)
-        translationShortcutMenu.setAccessibilityLabel("Перевести и прочитать")
-        let shortcutsPage = column([
-            label("Сочетания клавиш", size: 26, bold: true),
-            label("Читать / остановить выделение", bold: true),
-            shortcutMenu,
-            label("Повторное нажатие останавливает чтение. Сочетание работает и при закрытом окне настроек."),
-            label("Для Option + Esc штатное «Проговаривание выбранного текста» должно быть отключено или использовать другое сочетание.", size: 16),
-            field("Читать основным голосом", control: primaryShortcutMenu),
-            label("Без перевода и автоопределения: основной язык, голос и скорость из раздела «Речь».", size: 16),
-            primaryShortcutNote,
-            field("Перевести и прочитать", control: translationShortcutMenu),
-            label("Command + Esc также используется системным Accessibility Reader. Если он включён, выберите другое сочетание.", size: 16),
-            translationShortcutNote,
-            label("Распознать и прочитать область экрана", bold: true),
-            ocrShortcutMenu,
-            label("Нажмите сочетание и выделите область мышью. Повторное нажатие отменяет распознавание или останавливает речь. Esc отменяет выбор области.", size: 16)
-        ], spacing: 16)
-        loginSettings = button("Настройки входа macOS…", #selector(openLoginSettings))
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "тестовая сборка"
-        let generalPage = column([
-            label("Общие", size: 26, bold: true),
-            switchRow("Запускать при входе в macOS", toggle: loginSwitch, action: #selector(loginChanged)),
-            loginNote,
-            loginSettings,
-            label("Доступ к выделенному тексту", bold: true),
-            permissionNote,
-            button("Настройки доступа…", #selector(permission)),
-            label("Чтение через копирование", bold: true),
-            label("Для приложений, которые показывают выделение, но не передают его системе (например, Telegram). Если обычное чтение не удалось, QuietSelection просит приложение скопировать выделенный текст и сразу возвращает прежнее содержимое буфера обмена. Если буфер нельзя вернуть без потерь (пароль, файлы, очень большой объём), он не трогается.", size: 16),
-            copyAppsList,
-            copyAddMenu,
-            label("Текст обрабатывается на Mac и не сохраняется в журнале. Буфер обмена используется только для приложений из списка выше.", size: 16),
-            label("QuietSelection \(version)", size: 16)
-        ], spacing: 22)
-        let screenPage = column([
-            label("Чтение с экрана", size: 26, bold: true),
-            label("Для изображений и мест, где обычное выделение текста недоступно."),
-            screenShortcutNote,
-            button("Выделить область и прочитать", #selector(readRegion)),
-            label("Обведите текст мышью на одном мониторе и отпустите кнопку. Esc — отмена. Лучше выделять один столбец текста.", size: 17),
-            label("Распознавание выполняется на Mac. Изображение и текст не сохраняются на диск и не отправляются в интернет.", size: 16),
-            label("Язык, голос и скорость используются из раздела «Речь». При ручном выборе языка распознавание тоже использует этот язык.", size: 16),
-            label("Доступ к экрану", bold: true),
-            screenPermissionNote,
-            button("Разрешение на чтение экрана…", #selector(screenPermission))
-        ], spacing: 18)
-        pages = [generalPage, speechSettings, translationSettings, shortcutsPage, screenPage]
+        pages = [generalPage(), speechSettings, translationSettings, shortcutsPage(), screenPage(), copyPage()]
         tabs.tabPosition = .none
         tabs.tabViewBorderType = .none
-        tabs.font = .systemFont(ofSize: 17, weight: .medium)
-        tabs.controlSize = .large
-        tabs.allowsTruncatedLabels = false
         tabs.setAccessibilityLabel("Разделы настроек")
         for (index, page) in pages.enumerated() {
             let host = SettingsContentView()
@@ -222,13 +217,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
                 host.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
                 host.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
                 host.heightAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.heightAnchor),
-                page.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 20),
-                page.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -20),
+                page.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 24),
+                page.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -24),
                 page.topAnchor.constraint(equalTo: host.topAnchor, constant: 20),
                 page.bottomAnchor.constraint(lessThanOrEqualTo: host.bottomAnchor, constant: -20)
             ])
             let item = NSTabViewItem(identifier: index)
-            item.label = sectionTitles[index]
+            item.label = sections[index].title
             item.view = scroll
             tabs.addTabViewItem(item)
             scrollViews.append(scroll)
@@ -236,8 +231,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         // Native sidebar selection, without push-button bezels or rotated labels.
         navigation.style = .plain
         navigation.headerView = nil
-        navigation.rowHeight = 54
-        navigation.intercellSpacing = NSSize(width: 0, height: 0)
+        navigation.rowHeight = 38
+        navigation.intercellSpacing = NSSize(width: 0, height: 2)
         navigation.allowsEmptySelection = false
         navigation.allowsMultipleSelection = false
         navigation.backgroundColor = .clear
@@ -250,41 +245,46 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         let navigationScroll = NSScrollView()
         navigationScroll.drawsBackground = false
         navigationScroll.documentView = navigation
-        let brand = label("QuietSelection", size: 19, bold: true)
+        let brand = NSTextField(labelWithString: "QuietSelection")
+        brand.font = .systemFont(ofSize: 15, weight: .bold)
         let brandHost = NSView()
         brand.translatesAutoresizingMaskIntoConstraints = false
         brandHost.addSubview(brand)
         NSLayoutConstraint.activate([
-            brand.leadingAnchor.constraint(equalTo: brandHost.leadingAnchor, constant: 24),
-            brand.trailingAnchor.constraint(equalTo: brandHost.trailingAnchor, constant: -16),
+            brand.leadingAnchor.constraint(equalTo: brandHost.leadingAnchor, constant: 18),
+            brand.trailingAnchor.constraint(equalTo: brandHost.trailingAnchor, constant: -12),
             brand.topAnchor.constraint(equalTo: brandHost.topAnchor),
             brand.bottomAnchor.constraint(equalTo: brandHost.bottomAnchor)
         ])
-        let sidebar = column([brandHost, navigationScroll], spacing: 24)
+        let sidebar = SettingsUI.page([brandHost, navigationScroll], spacing: 16)
         let divider = NSBox()
         divider.boxType = .separator
-        let body = row([sidebar, divider, tabs])
+        let body = NSStackView(views: [sidebar, divider, tabs])
+        body.orientation = .horizontal
         body.alignment = .top
+        body.distribution = .fill
         body.spacing = 0
         NSLayoutConstraint.activate([
-            sidebar.widthAnchor.constraint(equalToConstant: 230),
+            sidebar.widthAnchor.constraint(equalToConstant: 210),
             sidebar.heightAnchor.constraint(equalTo: body.heightAnchor),
             divider.widthAnchor.constraint(equalToConstant: 1),
             divider.heightAnchor.constraint(equalTo: body.heightAnchor),
             tabs.heightAnchor.constraint(equalTo: body.heightAnchor),
-            navigationScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220)
+            navigationScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 260)
         ])
         tabs.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let stopButton = button("Остановить", #selector(stop))
-        let quitButton = button("Завершить", #selector(quit))
-        for control in [stopButton, quitButton] {
-            control.setContentHuggingPriority(.required, for: .horizontal)
-            control.setContentCompressionResistancePriority(.required, for: .horizontal)
-        }
-        let footer = row([status, stopButton, quitButton])
+
+        stopButton = SettingsUI.button("Остановить", target: self, action: #selector(stop))
+        status.font = .systemFont(ofSize: SettingsUI.bodySize)
+        status.isSelectable = true
+        status.maximumNumberOfLines = 3
         status.setContentHuggingPriority(.defaultLow, for: .horizontal)
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         status.setAccessibilityLabel("Состояние чтения")
+        let footer = NSStackView(views: [status, stopButton])
+        footer.orientation = .horizontal
+        footer.alignment = .centerY
+        footer.spacing = 12
         let separator = NSBox()
         separator.boxType = .separator
         for view in [body, separator, footer] {
@@ -294,68 +294,126 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         NSLayoutConstraint.activate([
             body.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             body.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            body.topAnchor.constraint(equalTo: root.topAnchor, constant: 24),
-            body.heightAnchor.constraint(greaterThanOrEqualToConstant: 480),
-            body.bottomAnchor.constraint(equalTo: separator.topAnchor, constant: -18),
-            separator.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
-            separator.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
+            body.topAnchor.constraint(equalTo: root.topAnchor, constant: 16),
+            body.heightAnchor.constraint(greaterThanOrEqualToConstant: 440),
+            body.bottomAnchor.constraint(equalTo: separator.topAnchor, constant: -12),
+            separator.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            separator.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
             separator.heightAnchor.constraint(equalToConstant: 1),
-            footer.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 18),
-            footer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
-            footer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
-            footer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -22),
-            footer.heightAnchor.constraint(equalToConstant: 64)
+            footer.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 10),
+            footer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            footer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            footer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
+            footer.heightAnchor.constraint(greaterThanOrEqualToConstant: 36)
         ])
+        setStatus("Готово")
+        updateCopyFallback(apps: [], candidates: [])
         selectSection(0)
     }
 
-    func update(voices: [VoiceChoice], selection: VoiceSettings, automatic: Bool,
-                testShortcut: Bool, login: String, trusted: Bool) {
+    // MARK: Updates
+
+    func update(voices: [VoiceChoice], selection: VoiceSettings, automatic: Bool, login: String) {
         speechSettings.update(voices: voices, selection: selection, automatic: automatic)
-        shortcutMenu.selectItem(at: testShortcut ? 1 : 0)
         loginSwitch.state = login == "enabled" || login == "requires_approval" ? .on : .off
-        loginNote.stringValue = login == "enabled" ? "Автозапуск включён. Окно настроек при входе не открывается."
-            : login == "requires_approval" ? "macOS ожидает вашего разрешения в настройках входа."
-            : "Автозапуск выключен."
+        loginNote.stringValue = login == "enabled" ? "Окно настроек при входе не открывается"
+            : login == "requires_approval" ? "macOS ожидает вашего разрешения в настройках входа"
+            : "Выключено"
         loginSettings.isHidden = login != "requires_approval"
-        permissionNote.stringValue = trusted ? "Доступ разрешён." : "Нужно разрешение «Универсальный доступ» для QuietSelection."
     }
-    func setStatus(_ message: String) { status.stringValue = message }
+
+    func updatePermissions(accessibility: Bool, screen: Bool) {
+        accessibilityPermission.update(granted: accessibility)
+        screenPermissionGeneral.update(granted: screen)
+        screenPermissionPage.update(granted: screen)
+    }
+
+    /// `failed`: actions whose keys could not be registered (taken by another app).
+    func updateShortcuts(_ values: [ShortcutAction: Shortcut], failed: Set<ShortcutAction>) {
+        shortcuts = values
+        for action in ShortcutAction.allCases {
+            recorders[action]?.shortcut = values[action]
+            let warning = shortcutWarnings[action]
+            if failed.contains(action) {
+                warning?.stringValue = "Не удалось назначить: сочетание занято. Выберите другое."
+                warning?.textColor = .systemOrange
+            } else if let value = values[action], let conflict = action.systemConflict(value) {
+                warning?.stringValue = conflict
+                warning?.textColor = .secondaryLabelColor
+            } else {
+                warning?.stringValue = ""
+            }
+            warning?.isHidden = warning?.stringValue.isEmpty ?? true
+        }
+        screenShortcut.stringValue = values[.screen].map(KeyNames.title) ?? "Не назначено"
+    }
+
+    func showShortcutMessage(_ message: String) { shortcutHint.stringValue = message }
+
+    func setStatus(_ message: String, busy: Bool = false) {
+        status.stringValue = message
+        stopButton?.isEnabled = busy
+    }
+
     func updateCopyFallback(apps: [(id: String, name: String)], candidates: [(id: String, name: String)]) {
         copyAppIDs = apps.map(\.id)
-        for view in copyAppsList.arrangedSubviews { copyAppsList.removeArrangedSubview(view); view.removeFromSuperview() }
+        for view in copyAppsCard.arrangedSubviews { copyAppsCard.removeArrangedSubview(view); view.removeFromSuperview() }
+        var rows: [NSView] = []
         if apps.isEmpty {
-            copyAppsList.addArrangedSubview(label("Список пуст.", size: 16))
+            rows.append(SettingsUI.row("Список пуст", caption: SettingsUI.caption("Добавьте приложение кнопкой «Добавить»"), controls: []))
         }
         for (index, app) in apps.enumerated() {
-            let remove = button("Убрать", #selector(copyAppRemoved(_:)))
+            let remove = SettingsUI.iconButton("minus.circle", label: "Убрать " + app.name, target: self,
+                                               action: #selector(copyAppRemoved(_:)))
             remove.tag = index
-            remove.setAccessibilityLabel("Убрать \(app.name) из чтения через копирование")
-            copyAppsList.addArrangedSubview(row([label(app.name), remove]))
+            let icon = NSImageView(image: Self.icon(for: app.id))
+            icon.widthAnchor.constraint(equalToConstant: 22).isActive = true
+            icon.heightAnchor.constraint(equalToConstant: 22).isActive = true
+            let name = SettingsUI.text(app.name)
+            let row = NSStackView(views: [icon, name, NSView(), remove])
+            row.orientation = .horizontal
+            row.spacing = 10
+            row.edgeInsets = NSEdgeInsets(top: 7, left: 0, bottom: 7, right: 0)
+            rows.append(row)
+        }
+        for (index, row) in rows.enumerated() {
+            if index > 0 {
+                let separator = NSBox()
+                separator.boxType = .separator
+                separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
+                copyAppsCard.addArrangedSubview(separator)
+                separator.widthAnchor.constraint(equalTo: copyAppsCard.widthAnchor, constant: -28).isActive = true
+            }
+            copyAppsCard.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: copyAppsCard.widthAnchor, constant: -28).isActive = true
         }
         copyCandidateIDs = candidates.map(\.id)
-        copyAddMenu.removeAllItems()
-        copyAddMenu.addItem(withTitle: "Добавить запущенное приложение…")
-        copyAddMenu.addItems(withTitles: candidates.map(\.name))
-        copyAddMenu.selectItem(at: 0)
-        copyAddMenu.isEnabled = !candidates.isEmpty
+        copyAddButton.removeAllItems()
+        copyAddButton.addItem(withTitle: "Добавить…")
+        for candidate in candidates {
+            let item = NSMenuItem(title: candidate.name, action: #selector(copyAppAdded(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = candidate.id
+            let image = Self.icon(for: candidate.id)
+            image.size = NSSize(width: 16, height: 16)
+            item.image = image
+            copyAddButton.menu?.addItem(item)
+        }
+        if !candidates.isEmpty { copyAddButton.menu?.addItem(.separator()) }
+        let choose = NSMenuItem(title: "Выбрать в папке «Программы»…", action: #selector(chooseCopyApp), keyEquivalent: "")
+        choose.target = self
+        copyAddButton.menu?.addItem(choose)
     }
-    func updateExtraShortcuts(primary: PrimaryShortcut, primaryRegistered: Bool,
-                              translation: TranslationShortcut, translationRegistered: Bool) {
-        primaryShortcutMenu.selectItem(at: primary.rawValue)
-        translationShortcutMenu.selectItem(at: translation.rawValue)
-        primaryShortcutNote.stringValue = primaryRegistered ? "" : "Сочетание недоступно. Выберите другое."
-        translationShortcutNote.stringValue = translationRegistered ? "" : "Сочетание недоступно. Выберите другое."
-        primaryShortcutNote.isHidden = primaryRegistered
-        translationShortcutNote.isHidden = translationRegistered
+
+    private static func icon(for bundleID: String) -> NSImage {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+        return NSImage(systemSymbolName: "app", accessibilityDescription: nil) ?? NSImage()
     }
-    func updateScreenReading(shortcut: OCRShortcut, registered: Bool, permitted: Bool) {
-        ocrShortcutMenu.selectItem(at: shortcut.rawValue)
-        screenShortcutNote.stringValue = registered ? "Сочетание: " + shortcut.title
-            : "Сочетание недоступно. Выберите другое в разделе «Сочетания клавиш»."
-        screenPermissionNote.stringValue = permitted ? "Разрешение получено."
-            : "Для первого использования нужно разрешение macOS «Запись экрана»."
-    }
+
+    // MARK: Presentation
+
     func present() {
         selectSection(0)
         presentationPending = true
@@ -374,21 +432,34 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         presentationPending = false
         window.makeKeyAndOrderFront(nil)
     }
-    func windowWillClose(_ notification: Notification) { presentationPending = false }
+    func windowWillClose(_ notification: Notification) {
+        presentationPending = false
+        for recorder in recorders.values { recorder.stop() }
+    }
     func windowDidBecomeKey(_ notification: Notification) { onRefresh?() }
     func closeSettings() { window?.performClose(nil) }
     var selectedSection: Int { tabs.indexOfTabViewItem(tabs.selectedTabViewItem!) }
-    func numberOfRows(in tableView: NSTableView) -> Int { sectionTitles.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { sections.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let cell = SettingsSectionCell()
-        let title = NSTextField(labelWithString: sectionTitles[row])
-        title.font = .systemFont(ofSize: 17, weight: .medium)
-        title.translatesAutoresizingMaskIntoConstraints = false
+        let title = NSTextField(labelWithString: sections[row].title)
+        title.font = .systemFont(ofSize: 14, weight: .medium)
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: sections[row].symbol, accessibilityDescription: nil)
+        icon.symbolConfiguration = .init(pointSize: 14, weight: .medium)
+        icon.contentTintColor = .controlAccentColor
+        for view in [title, icon] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(view)
+        }
         cell.textField = title
-        cell.addSubview(title)
+        cell.imageView = icon
         NSLayoutConstraint.activate([
-            title.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 24),
-            title.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -16),
+            icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 18),
+            icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 20),
+            title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
+            title.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12),
             title.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
         ])
         return cell
@@ -427,7 +498,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
             if let title = (pages[index] as? NSStackView)?.views.first {
                 let frame = title.convert(title.bounds, to: view)
                 precondition(view.bounds.contains(frame), "Settings heading outside window")
-                precondition(frame.height >= 25, "Settings heading compressed")
+                precondition(frame.height >= 20, "Settings heading compressed")
             }
             guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
             if let context = NSGraphicsContext(bitmapImageRep: bitmap), let layer = view.layer {
@@ -440,15 +511,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
             }
         }
     }
-    @objc private func shortcutChanged() { onShortcut?(shortcutMenu.indexOfSelectedItem == 1) }
-    @objc private func ocrShortcutChanged() {
-        if let shortcut = OCRShortcut(rawValue: ocrShortcutMenu.indexOfSelectedItem) { onOCRShortcut?(shortcut) }
-    }
-    @objc private func primaryShortcutChanged() {
-        if let value = PrimaryShortcut(rawValue: primaryShortcutMenu.indexOfSelectedItem) { onPrimaryShortcut?(value) }
-    }
-    @objc private func translationShortcutChanged() {
-        if let value = TranslationShortcut(rawValue: translationShortcutMenu.indexOfSelectedItem) { onTranslationShortcut?(value) }
+
+    // MARK: Actions
+
+    @objc private func resetShortcut(_ sender: NSButton) {
+        let actions = ShortcutAction.allCases
+        guard actions.indices.contains(sender.tag) else { return }
+        let action = actions[sender.tag]
+        onShortcutChange?(action, action.defaultShortcut)
     }
     @objc private func readRegion() { onReadRegion?() }
     @objc private func screenPermission() { onScreenPermission?() }
@@ -456,15 +526,22 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     @objc private func openLoginSettings() { onLoginSettings?() }
     @objc private func permission() { onPermission?() }
     @objc private func stop() { onStop?() }
-    @objc private func copyAppAdded() {
-        let index = copyAddMenu.indexOfSelectedItem - 1
-        copyAddMenu.selectItem(at: 0)
-        guard copyCandidateIDs.indices.contains(index) else { return }
-        onAddCopyApp?(copyCandidateIDs[index])
+    @objc private func quit() { onQuit?() }
+    @objc private func copyAppAdded(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? String { onAddCopyApp?(id) }
+    }
+    @objc private func chooseCopyApp() {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Добавить"
+        guard panel.runModal() == .OK, let url = panel.url,
+              let id = Bundle(url: url)?.bundleIdentifier else { return }
+        onAddCopyApp?(id)
     }
     @objc private func copyAppRemoved(_ sender: NSButton) {
         guard copyAppIDs.indices.contains(sender.tag) else { return }
         onRemoveCopyApp?(copyAppIDs[sender.tag])
     }
-    @objc private func quit() { onQuit?() }
 }

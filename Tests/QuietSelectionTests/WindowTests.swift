@@ -25,6 +25,7 @@ struct WindowTests {
         let delegate = WindowTestDelegate()
         app.delegate = delegate
         app.mainMenu = AppMenu.make(target: delegate)
+        let defaults = Dictionary(uniqueKeysWithValues: ShortcutAction.allCases.map { ($0, $0.defaultShortcut) })
         DispatchQueue.main.async {
             check(app, delegate: delegate)
             if let index = CommandLine.arguments.firstIndex(of: "--render"), CommandLine.arguments.count > index + 1 {
@@ -32,11 +33,10 @@ struct WindowTests {
                     VoiceChoice(id: "test-en", name: "Samantha", tag: "en-US", quality: 2),
                     VoiceChoice(id: "test-ja", name: "Kyoko", tag: "ja-JP", quality: 2)]
                 let selection = VoiceSettings(language: "ru", saved: [:], legacyID: nil, voices: voices)
-                delegate.controller.update(voices: voices, selection: selection, automatic: true,
-                    testShortcut: false, login: "enabled", trusted: true)
-                delegate.controller.updateScreenReading(shortcut: .controlEscape, registered: true, permitted: true)
+                delegate.controller.update(voices: voices, selection: selection, automatic: true, login: "enabled")
+                delegate.controller.updatePermissions(accessibility: true, screen: true)
                 delegate.controller.translationSettings.update(target: "ru", sources: ["en", "ja"], states: ["en": .supported, "ja": .supported])
-                delegate.controller.updateExtraShortcuts(primary: .controlOptionEscape, primaryRegistered: true, translation: .commandEscape, translationRegistered: true)
+                delegate.controller.updateShortcuts(defaults, failed: [])
                 try! delegate.controller.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
             }
             exit(0)
@@ -86,8 +86,7 @@ struct WindowTests {
         var configuration = VoiceSettings(language: "ru", saved: [:], legacyID: nil, voices: voices)
         let speechUI = delegate.controller.speechSettings
         func updateSpeechUI() {
-            delegate.controller.update(voices: voices, selection: configuration, automatic: true,
-                testShortcut: false, login: "enabled", trusted: true)
+            delegate.controller.update(voices: voices, selection: configuration, automatic: true, login: "enabled")
             window.contentView!.layoutSubtreeIfNeeded()
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
@@ -153,6 +152,28 @@ struct WindowTests {
         precondition(translationUI.downloadButtons["en"] == nil && translationUI.downloadButtons["ru"] != nil)
         delegate.controller.selectSection(0)
         print("translation_ui=PASS fixed_scroll, readiness_states, explicit_download, primary_change")
+
+        // Shortcut recorders: one per action, current values shown, reset sends the default.
+        delegate.controller.selectSection(3)
+        var shortcutValues = Dictionary(uniqueKeysWithValues: ShortcutAction.allCases.map { ($0, $0.defaultShortcut) })
+        shortcutValues[.primary] = Shortcut(keyCode: 15, modifiers: Shortcut.control | Shortcut.option)
+        delegate.controller.updateShortcuts(shortcutValues, failed: [.translate])
+        let recorders = delegate.controller.recorders
+        precondition(recorders.count == ShortcutAction.allCases.count)
+        precondition(recorders[.read]!.title == "Option + Esc")
+        precondition(recorders[.primary]!.title == "Control + Option + R")
+        var recordingEvents: [Bool] = []
+        delegate.controller.onShortcutChange = { _, _ in }
+        delegate.controller.onShortcutRecording = { recordingEvents.append($0) }
+        recorders[.screen]!.performClick(nil)
+        precondition(recorders[.screen]!.recording && recordingEvents == [true])
+        recorders[.read]!.performClick(nil)
+        precondition(!recorders[.screen]!.recording && recorders[.read]!.recording)
+        recorders[.read]!.stop()
+        precondition(!recorders[.read]!.recording && recordingEvents.last == false)
+        precondition(recorders[.read]!.title == "Option + Esc")
+        delegate.controller.selectSection(0)
+        print("shortcut_ui=PASS recorders_titles_single_recording_cancel")
 
         // Local AppKit menu dispatch only: no posting or injecting keyboard events.
         func command(_ letter: String, code: UInt16) -> Bool {

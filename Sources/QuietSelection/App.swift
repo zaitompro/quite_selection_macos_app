@@ -7,14 +7,10 @@ import AVFoundation
 final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     private let speech = Speech()
     private let worker = DispatchQueue(label: "local.quietselection.ax", qos: .userInitiated)
-    private var hotKey: HotKey?
-    private var ocrHotKey: HotKey?
-    private var primaryHotKey: HotKey?
-    private var translationHotKey: HotKey?
-    private var primaryShortcut = PrimaryShortcut.controlOptionEscape
-    private var translationShortcut = TranslationShortcut.commandEscape
-    private var primaryRegistered = false
-    private var translationRegistered = false
+    private var hotKeys: [ShortcutAction: HotKey] = [:]
+    private var shortcuts: [ShortcutAction: Shortcut] = [:]
+    /// Actions whose keys could not be registered (taken by another application).
+    private var failedShortcuts: Set<ShortcutAction> = []
     private enum ReadMode { case normal, primary, translated }
     private let translator = LocalTranslation()
     private var translationTask: Task<Void, Never>?
@@ -26,8 +22,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     private var availabilityTask: Task<Void, Never>?
     private var availabilityKey = ""
     private var translationStates: [String: TranslationReadiness] = [:]
-    private var ocrShortcut = OCRShortcut.controlEscape
-    private var ocrRegistered = false
     private let regionPicker = RegionPicker()
     private var captureTask: Task<Void, Never>?
     private var ocrJob: OCRJob?
@@ -36,8 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     private let ocrWorker = DispatchQueue(label: "local.quietselection.ocr", qos: .userInitiated)
     private var statusItem: NSStatusItem!
     private var settings: SettingsWindow?
-    private var testShortcut = true
-    private var registered = false
     private var pending = false
     private var generation = 0
     private var message = "Готово"
@@ -56,7 +48,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = AppMenu.make(target: self)
-        testShortcut = !preferences.bool(forKey: "UseOptionEscape")
         voices = Self.availableVoices()
         selection = VoiceSettings(language: preferences.string(forKey: "SelectedLanguage"),
             saved: preferences.dictionary(forKey: "VoicesByLanguage") as? [String: String] ?? [:],
@@ -79,28 +70,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 self.setStatus("Готово")
             }
         }
-        do {
-            hotKey = try HotKey()
-            hotKey?.action = { [weak self] in self?.trigger() }
-            changeShortcut(testShortcut)
-        } catch { setStatus("Не удалось установить обработчик сочетания") }
-        ocrShortcut = OCRShortcut(rawValue: preferences.integer(forKey: "OCRShortcut")) ?? .controlEscape
-        do {
-            ocrHotKey = try HotKey(identifier: 2)
-            ocrHotKey?.action = { [weak self] in self?.triggerOCR() }
-            changeOCRShortcut(ocrShortcut)
-        } catch { setStatus("Не удалось установить сочетание чтения области") }
-        primaryShortcut = PrimaryShortcut(rawValue: preferences.integer(forKey: "PrimaryShortcut")) ?? .controlOptionEscape
-        translationShortcut = TranslationShortcut(rawValue: preferences.integer(forKey: "TranslationShortcut")) ?? .commandEscape
-        do {
-            primaryHotKey = try HotKey(identifier: 3)
-            primaryHotKey?.action = { [weak self] in self?.trigger(mode: .primary) }
-            changePrimaryShortcut(primaryShortcut)
-            translationHotKey = try HotKey(identifier: 4)
-            translationHotKey?.action = { [weak self] in self?.trigger(mode: .translated) }
-            changeTranslationShortcut(translationShortcut)
-        } catch { setStatus("Не удалось установить дополнительные сочетания") }
+        shortcuts = ShortcutSettings.load(saved: preferences.dictionary(forKey: ShortcutSettings.preferenceKey),
+                                          legacy: { [preferences] in preferences.object(forKey: $0) })
+        for action in ShortcutAction.allCases {
+            do {
+                let key = try HotKey(identifier: action.hotKeyID)
+                key.action = { [weak self] in self?.perform(action) }
+                hotKeys[action] = key
+            } catch { failedShortcuts.insert(action) }
+        }
+        registerAllShortcuts()
+        saveShortcuts()
+        if !failedShortcuts.isEmpty {
+            fail("Некоторые сочетания заняты другими приложениями. Назначьте другие в разделе «Сочетания клавиш».")
+        }
         if CommandLine.arguments.contains("--show-settings") { showSettings() }
+    }
+
+    private func perform(_ action: ShortcutAction) {
+        switch action {
+        case .read: trigger()
+        case .primary: trigger(mode: .primary)
+        case .translate: trigger(mode: .translated)
+        case .screen: triggerOCR()
+        }
+    }
+    private func registerAllShortcuts() {
+        for action in ShortcutAction.allCases {
+            guard let key = hotKeys[action], let shortcut = shortcuts[action] else { continue }
+            do { try key.register(shortcut); failedShortcuts.remove(action) }
+            catch { failedShortcuts.insert(action) }
+        }
+    }
+    private func saveShortcuts() {
+        preferences.set(ShortcutSettings.preferenceValue(shortcuts), forKey: ShortcutSettings.preferenceKey)
+    }
+    /// While a new shortcut is recorded, the current ones must not fire.
+    private func setShortcutRecording(_ recording: Bool) {
+        if recording { for key in hotKeys.values { key.unregister() } }
+        else { registerAllShortcuts() }
+        refresh()
+    }
+    private func changeShortcut(_ action: ShortcutAction, to requested: Shortcut) {
+        guard let key = hotKeys[action] else { return }
+        defer { refresh() }
+        guard requested.isValid, shortcuts[action] != requested || failedShortcuts.contains(action) else { return }
+        if let other = ShortcutSettings.conflict(for: action, shortcut: requested, in: shortcuts) {
+            fail("«\(KeyNames.title(requested))» уже назначено действию «\(other.title)». Прежнее сочетание сохранено.")
+            settings?.showShortcutMessage("Это сочетание уже используется для «\(other.title)».")
+            return
+        }
+        do {
+            try key.register(requested)
+            shortcuts[action] = requested
+            failedShortcuts.remove(action)
+            saveShortcuts()
+            setStatus("\(action.title): \(KeyNames.title(requested))")
+            settings?.showShortcutMessage("")
+        } catch {
+            fail("«\(KeyNames.title(requested))» занято другим приложением или системой. Прежнее сочетание сохранено.")
+            settings?.showShortcutMessage("«\(KeyNames.title(requested))» занято другим приложением или системой.")
+            // Re-register the previous keys in case they were released.
+            if let previous = shortcuts[action] { try? key.register(previous) }
+        }
     }
 
     private func applySpeechSettings() {
@@ -122,14 +154,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     private func refresh() {
         voices = Self.availableVoices()
         speech.voiceID = selection.selectedVoice(in: voices)?.id
-        settings?.update(voices: voices, selection: selection,
-            automatic: automatic, testShortcut: testShortcut,
-            login: LoginLaunch.statusCode, trusted: AXIsProcessTrusted())
-        settings?.setStatus(message)
-        settings?.updateScreenReading(shortcut: ocrShortcut, registered: ocrRegistered,
-                                      permitted: CGPreflightScreenCaptureAccess())
-        settings?.updateExtraShortcuts(primary: primaryShortcut, primaryRegistered: primaryRegistered,
-            translation: translationShortcut, translationRegistered: translationRegistered)
+        settings?.update(voices: voices, selection: selection, automatic: automatic, login: LoginLaunch.statusCode)
+        settings?.updatePermissions(accessibility: AXIsProcessTrusted(), screen: CGPreflightScreenCaptureAccess())
+        settings?.updateShortcuts(shortcuts, failed: failedShortcuts)
+        settings?.setStatus(message, busy: busy)
         if settings != nil { updateCopyFallbackSettings() }
         refreshTranslation()
     }
@@ -202,10 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 self.selection.removeLanguage(code)
                 self.applySpeechSettings(); self.refresh()
             }
-            controller.onShortcut = { [weak self] in self?.changeShortcut($0) }
-            controller.onOCRShortcut = { [weak self] in self?.changeOCRShortcut($0) }
-            controller.onPrimaryShortcut = { [weak self] in self?.changePrimaryShortcut($0) }
-            controller.onTranslationShortcut = { [weak self] in self?.changeTranslationShortcut($0) }
+            controller.onShortcutChange = { [weak self] in self?.changeShortcut($0, to: $1) }
+            controller.onShortcutRecording = { [weak self] in self?.setShortcutRecording($0) }
             controller.translationSettings.onRefresh = { [weak self] in self?.refreshTranslation(force: true) }
             controller.translationSettings.onDownload = { [weak self] in self?.prepareTranslation(source: $0) }
             controller.onReadRegion = { [weak self] in self?.triggerOCR() }
@@ -238,25 +264,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         settings?.finishPresentation()
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    /// Something is being read, recognised or translated, so Stop has an effect.
+    private var busy: Bool {
+        speech.speaking || pending || ocrBusy || regionPicker.active || translating
+    }
     private func setStatus(_ text: String) {
         // Only fixed technical messages; never selected content.
         message = text
-        settings?.setStatus(text)
+        // Speech may not report itself as speaking until the next run loop turn.
+        let reading = text.hasPrefix("Чтение") || text.hasPrefix("Прослушивание")
+        settings?.setStatus(text, busy: busy || reading)
         statusItem?.button?.toolTip = "QuietSelection: \(text)"
-    }
-    private func changeShortcut(_ requestedTest: Bool) {
-        guard let hotKey else { return }
-        if registered && requestedTest == testShortcut { return }
-        do {
-            try hotKey.register(testShortcut: requestedTest)
-            registered = true
-            testShortcut = requestedTest
-            preferences.set(!requestedTest, forKey: "UseOptionEscape")
-            setStatus(requestedTest ? "Готово: Option + Shift + Esc" : "Готово: Option + Esc")
-        } catch HotKeyError.registration(let code) {
-            fail("Сочетание недоступно: \(code). Прежнее сохранено.")
-        } catch { fail("Не удалось сменить сочетание. Прежнее сохранено.") }
-        refresh()
     }
     private func trigger(mode: ReadMode = .normal) {
         if speech.speaking || pending || ocrBusy || regionPicker.active || translating { stop(); return }
@@ -463,26 +481,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         }
         preparation?.present()
     }
-    private func changePrimaryShortcut(_ requested: PrimaryShortcut) {
-        guard let primaryHotKey else { return }
-        if primaryRegistered && requested == primaryShortcut { return }
-        do {
-            try primaryHotKey.register(keyCode: requested.keyCode, modifiers: requested.modifiers)
-            primaryShortcut = requested; primaryRegistered = true
-            preferences.set(requested.rawValue, forKey: "PrimaryShortcut")
-        } catch { fail("Сочетание основного голоса занято. Прежнее сохранено.") }
-        refresh()
-    }
-    private func changeTranslationShortcut(_ requested: TranslationShortcut) {
-        guard let translationHotKey else { return }
-        if translationRegistered && requested == translationShortcut { return }
-        do {
-            try translationHotKey.register(keyCode: requested.keyCode, modifiers: requested.modifiers)
-            translationShortcut = requested; translationRegistered = true
-            preferences.set(requested.rawValue, forKey: "TranslationShortcut")
-        } catch { fail("Сочетание перевода занято. Прежнее сохранено.") }
-        refresh()
-    }
     private func fail(_ text: String) { setStatus(text); NSSound.beep() }
     private func stop() {
         generation += 1
@@ -532,17 +530,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
-    }
-    private func changeOCRShortcut(_ requested: OCRShortcut) {
-        guard let ocrHotKey else { return }
-        if ocrRegistered && requested == ocrShortcut { return }
-        do {
-            try ocrHotKey.register(keyCode: requested.keyCode, modifiers: requested.modifiers)
-            ocrShortcut = requested
-            ocrRegistered = true
-            preferences.set(requested.rawValue, forKey: "OCRShortcut")
-        } catch { fail("Сочетание чтения области занято. Прежнее сохранено.") }
-        refresh()
     }
     private func screenPermission() {
         guard !CGPreflightScreenCaptureAccess() else { refresh(); return }
@@ -619,7 +606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     }
     func applicationWillTerminate(_ notification: Notification) {
         stop(); availabilityTask?.cancel()
-        hotKey = nil; ocrHotKey = nil; primaryHotKey = nil; translationHotKey = nil
+        hotKeys.removeAll()
     }
     static let sampleText = "Это выбранный голос. Вы можете настроить удобную скорость чтения."
 }
@@ -637,14 +624,13 @@ struct QuietSelectionMain {
             let controller = SettingsWindow()
             let voices = AppDelegate.availableVoices()
             let selection = VoiceSettings(language: "ru", saved: [:], legacyID: nil, voices: voices)
-            controller.update(voices: voices, selection: selection, automatic: true,
-                testShortcut: false, login: "enabled", trusted: true)
-            controller.updateScreenReading(shortcut: .controlEscape, registered: true, permitted: false)
+            controller.update(voices: voices, selection: selection, automatic: true, login: "enabled")
+            controller.updatePermissions(accessibility: true, screen: false)
+            controller.updateShortcuts(Dictionary(uniqueKeysWithValues: ShortcutAction.allCases.map { ($0, $0.defaultShortcut) }),
+                                       failed: [])
             controller.translationSettings.update(target: "ru", sources: ["en", "ja"], states: [:])
             controller.updateCopyFallback(apps: [("ru.keepcoder.Telegram", "Telegram")],
                                           candidates: [("com.runningwithcrayons.Alfred", "Alfred")])
-            controller.updateExtraShortcuts(primary: .controlOptionEscape, primaryRegistered: true,
-                translation: .commandEscape, translationRegistered: true)
             do {
                 try controller.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
                 print("settings_render=PASS selection_queries=0")
@@ -674,7 +660,9 @@ struct QuietSelectionMain {
             let rates = defaults.dictionary(forKey: "SpeechRatesByLanguage") as? [String: NSNumber] ?? [:]
             let legacyRate = defaults.object(forKey: "SpeechRate") == nil ? AVSpeechUtteranceDefaultSpeechRate : defaults.float(forKey: "SpeechRate")
             let rate = Speech.validatedRate(rates[primary]?.floatValue ?? legacyRate)
-            print("speech_rate=\(rate) use_option_escape=\(defaults.bool(forKey: "UseOptionEscape"))")
+            let keys = ShortcutSettings.load(saved: defaults.dictionary(forKey: ShortcutSettings.preferenceKey),
+                                             legacy: { defaults.object(forKey: $0) })
+            print("speech_rate=\(rate) read_shortcut=\(keys[.read].map(KeyNames.title) ?? "none")")
             print("selection_queries=0 permission_prompts=0")
             return
         }
@@ -683,7 +671,8 @@ struct QuietSelectionMain {
         if arguments.contains("--hotkey-check") {
             do {
                 let key = try HotKey()
-                try key.register(testShortcut: true)
+                // A combination unlikely to be taken, to check registration only.
+                try key.register(Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.option | Shortcut.shift | Shortcut.control))
                 print("hotkey_register_unregister=PASS selection_queries=0")
                 withExtendedLifetime(key) {}
             } catch HotKeyError.registration(let code) {

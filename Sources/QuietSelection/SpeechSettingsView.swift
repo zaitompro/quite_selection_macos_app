@@ -6,12 +6,13 @@ private final class SpeechListDocument: NSView {
 
 @MainActor
 private enum SpeechLayout {
-    static func label(_ text: String, size: CGFloat = 17, bold: Bool = false) -> NSTextField {
+    static func label(_ text: String, size: CGFloat = SettingsUI.bodySize, bold: Bool = false) -> NSTextField {
         let field = NSTextField(wrappingLabelWithString: text)
         field.font = .systemFont(ofSize: size, weight: bold ? .semibold : .regular)
         field.isSelectable = true
         return field
     }
+    static func caption(_ text: String) -> NSTextField { SettingsUI.caption(text) }
     static func column(_ views: [NSView], spacing: CGFloat = 10) -> NSStackView {
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
@@ -32,8 +33,8 @@ private enum SpeechLayout {
     static func button(_ title: String, target: AnyObject, action: Selector) -> NSButton {
         let button = NSButton(title: title, target: target, action: action)
         button.bezelStyle = .rounded
-        button.controlSize = .large
-        button.font = .systemFont(ofSize: 17)
+        button.controlSize = .regular
+        button.font = .systemFont(ofSize: SettingsUI.bodySize)
         button.setContentHuggingPriority(.required, for: .horizontal)
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
         return button
@@ -63,8 +64,8 @@ final class SpeechLanguageCard: NSView {
         self.primary = primary
         super.init(frame: .zero)
         for menu in [languageMenu, voiceMenu] {
-            menu.controlSize = .large
-            menu.font = .systemFont(ofSize: 17)
+            menu.controlSize = .regular
+            menu.font = .systemFont(ofSize: SettingsUI.bodySize)
             menu.target = self
             menu.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         }
@@ -74,10 +75,10 @@ final class SpeechLanguageCard: NSView {
         speed.target = self
         speed.action = #selector(rateChanged)
         speed.isContinuous = true
-        value.font = .monospacedDigitSystemFont(ofSize: 17, weight: .medium)
-        value.widthAnchor.constraint(equalToConstant: 88).isActive = true
+        value.font = .monospacedDigitSystemFont(ofSize: SettingsUI.bodySize, weight: .medium)
+        value.widthAnchor.constraint(equalToConstant: 64).isActive = true
         previewButton = SpeechLayout.button("Прослушать", target: self, action: #selector(preview))
-        previewButton.widthAnchor.constraint(equalToConstant: 142).isActive = true
+        previewButton.widthAnchor.constraint(equalToConstant: 110).isActive = true
         toggle.target = self
         toggle.action = #selector(enabledChanged)
         removeButton = SpeechLayout.button("", target: self, action: #selector(remove))
@@ -87,10 +88,12 @@ final class SpeechLanguageCard: NSView {
         title.setContentHuggingPriority(.defaultLow, for: .horizontal)
         func field(_ text: String, _ controls: [NSView]) -> NSView {
             let label = SpeechLayout.label(text)
-            label.widthAnchor.constraint(equalToConstant: 82).isActive = true
+            label.widthAnchor.constraint(equalToConstant: 70).isActive = true
             return SpeechLayout.row([label] + controls)
         }
-        let first = primary ? field("Язык", [languageMenu]) : SpeechLayout.row([title, removeButton, toggle])
+        let header = SpeechLayout.row([title, removeButton, toggle])
+        header.setCustomSpacing(28, after: removeButton)
+        let first = primary ? field("Язык", [languageMenu]) : header
         let stack = SpeechLayout.column([
             first, field("Голос", [voiceMenu]), field("Скорость", [speed, value, previewButton])
         ], spacing: 8)
@@ -101,7 +104,7 @@ final class SpeechLanguageCard: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
-            heightAnchor.constraint(equalToConstant: 140)
+            heightAnchor.constraint(equalToConstant: 118)
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -173,7 +176,7 @@ final class SpeechSettingsView: NSView {
     let list = NSScrollView()
     private let listStack = SpeechLayout.column([] , spacing: 12)
     private let document = SpeechListDocument()
-    private let emptyLabel = SpeechLayout.label("Добавьте язык для автоопределения. Основной язык используется всегда.", size: 16)
+    private let emptyLabel = SpeechLayout.caption("Добавьте язык для автоопределения. Основной язык используется всегда.")
     private(set) var cards: [String: SpeechLanguageCard] = [:]
     private var orderedCodes: [String] = []
     private var availableToAdd: [String] = []
@@ -193,9 +196,9 @@ final class SpeechSettingsView: NSView {
         autoSwitch.action = #selector(automaticChanged)
         autoSwitch.setAccessibilityLabel("Автоопределение языка")
         addButton = SpeechLayout.button("+ Добавить язык", target: self, action: #selector(add))
-        let autoTitle = SpeechLayout.label("Автоопределение языка", size: 20, bold: true)
+        let autoTitle = SpeechLayout.label("Автоопределение языка", size: SettingsUI.groupTitleSize, bold: true)
         autoTitle.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let additionalTitle = SpeechLayout.label("Дополнительные языки", size: 20, bold: true)
+        let additionalTitle = SpeechLayout.label("Дополнительные языки", size: SettingsUI.groupTitleSize, bold: true)
         additionalTitle.setContentHuggingPriority(.defaultLow, for: .horizontal)
         list.hasVerticalScroller = true
         list.autohidesScrollers = false
@@ -216,15 +219,15 @@ final class SpeechSettingsView: NSView {
             listStack.bottomAnchor.constraint(lessThanOrEqualTo: document.bottomAnchor)
         ])
         let stack = SpeechLayout.column([
-            SpeechLayout.label("Речь", size: 26, bold: true),
-            SpeechLayout.label("Основной язык", size: 20, bold: true),
+            SettingsUI.pageTitle("Речь"),
+            SpeechLayout.label("Основной язык", size: SettingsUI.groupTitleSize, bold: true),
             primaryCard,
-            SpeechLayout.label("Используется при выключенном автоопределении и когда язык текста не удалось определить.", size: 16),
+            SpeechLayout.caption("Используется при выключенном автоопределении и когда язык текста определить не удалось."),
             SpeechLayout.row([autoTitle, autoSwitch]),
-            SpeechLayout.label("Основной язык участвует всегда. Добавьте другие языки.", size: 16),
+            SpeechLayout.caption("Каждое предложение читается голосом своего языка: основного или одного из включённых ниже."),
             SpeechLayout.row([additionalTitle, addButton]),
             list,
-            SpeechLayout.label("Изменения сохраняются автоматически.", size: 16)
+            SpeechLayout.caption("Изменения сохраняются автоматически.")
         ], spacing: 12)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)

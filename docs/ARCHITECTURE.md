@@ -10,6 +10,8 @@ All application sources are in `Sources/QuietSelection/`.
 | --- | --- |
 | `App.swift` | Application lifecycle, preferences, command routing and orchestration |
 | `AppMenu.swift`, `HotKey.swift`, `LoginLaunch.swift` | Explicit menu actions, global shortcuts and launch at login |
+| `Shortcut.swift`, `ShortcutRecorder.swift` | User-recorded shortcuts: validation, defaults, migration of earlier fixed choices, conflicts; recording control and key names |
+| `CopyFallback.swift`, `ClipboardCopy.swift` | Opt-in copy reading for listed applications, with full clipboard restore |
 | `Selection.swift` | Selection-only extraction policy with bounded UTF-16 lengths |
 | `FocusedElement.swift`, `Accessibility.swift` | Narrow focus resolution and supported selected-text/range attributes |
 | `LocalSelection.swift` | Selection from the app's own focused native text control |

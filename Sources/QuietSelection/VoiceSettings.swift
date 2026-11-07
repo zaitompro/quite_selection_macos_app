@@ -10,7 +10,10 @@ struct VoiceChoice: Equatable {
         let region = Locale(identifier: tag).region?.identifier
         let place = region.flatMap { Self.russian.localizedString(forRegionCode: $0) }
         let level = quality >= 3 ? "Премиум" : quality == 2 ? "Улучшенный" : "Стандартный"
-        return [name, place, level].compactMap { $0 }.joined(separator: " · ")
+        // Apple names repeat the quality in English: "Katya (Enhanced)".
+        let plainName = name.replacingOccurrences(of: #"\s*\((Enhanced|Premium)\)$"#, with: "",
+                                                  options: .regularExpression)
+        return [plainName, place, level].compactMap { $0 }.joined(separator: " · ")
     }
     static let russian = Locale(identifier: "ru_RU")
     static func languageTitle(_ code: String) -> String {

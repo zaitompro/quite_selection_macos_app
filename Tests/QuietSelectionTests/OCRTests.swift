@@ -24,10 +24,13 @@ struct OCRTests {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         if CommandLine.arguments.contains("--hotkeys") {
-            for shortcut in OCRShortcut.allCases {
-                let key = try HotKey(identifier: UInt32(100 + shortcut.rawValue))
-                try key.register(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers)
-                print("ocr_hotkey=PASS option=\(shortcut.rawValue)")
+            let choices = [ShortcutAction.screen.defaultShortcut,
+                           Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.control | Shortcut.shift)]
+            for (index, shortcut) in choices.enumerated() {
+                let key = try HotKey(identifier: UInt32(100 + index))
+                try key.register(shortcut)
+                key.unregister()
+                print("ocr_hotkey=PASS option=\(index) register_unregister")
                 withExtendedLifetime(key) {}
             }
             return

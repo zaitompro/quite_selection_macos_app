@@ -34,9 +34,15 @@ final class HotKey {
     }
 
     // Keep the old binding if the new one is unavailable.
-    func register(testShortcut: Bool) throws {
-        let modifiers = UInt32(optionKey) | (testShortcut ? UInt32(shiftKey) : 0)
-        try register(keyCode: UInt32(kVK_Escape), modifiers: modifiers)
+    func register(_ shortcut: Shortcut) throws {
+        try register(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers)
+    }
+
+    /// Releases the keys, for example while a new shortcut is being recorded.
+    func unregister() {
+        if let reference { UnregisterEventHotKey(reference) }
+        reference = nil
+        pressed = false
     }
 
     func register(keyCode: UInt32, modifiers: UInt32) throws {
@@ -57,28 +63,3 @@ final class HotKey {
 }
 
 enum HotKeyError: Error { case registration(OSStatus) }
-
-enum OCRShortcut: Int, CaseIterable {
-    case controlEscape, controlShiftEscape
-    var title: String {
-        self == .controlEscape ? "Control + Esc" : "Control + Shift + Esc"
-    }
-    var keyCode: UInt32 { UInt32(kVK_Escape) }
-    var modifiers: UInt32 {
-        UInt32(controlKey) | (self == .controlShiftEscape ? UInt32(shiftKey) : 0)
-    }
-}
-
-enum PrimaryShortcut: Int, CaseIterable {
-    case controlOptionEscape, controlOptionR
-    var title: String { self == .controlOptionEscape ? "Control + Option + Esc" : "Control + Option + R" }
-    var keyCode: UInt32 { UInt32(self == .controlOptionEscape ? kVK_Escape : kVK_ANSI_R) }
-    var modifiers: UInt32 { UInt32(controlKey | optionKey) }
-}
-
-enum TranslationShortcut: Int, CaseIterable {
-    case commandEscape, commandShiftEscape
-    var title: String { self == .commandEscape ? "Command + Esc" : "Command + Shift + Esc" }
-    var keyCode: UInt32 { UInt32(kVK_Escape) }
-    var modifiers: UInt32 { UInt32(cmdKey) | (self == .commandShiftEscape ? UInt32(shiftKey) : 0) }
-}
