@@ -40,8 +40,13 @@ struct Shortcut: Equatable, Hashable {
         123: "←", 124: "→", 125: "↓", 126: "↑", 115: "Home", 119: "End", 116: "Page Up", 121: "Page Down",
         122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6", 98: "F7", 100: "F8", 101: "F9",
         109: "F10", 103: "F11", 111: "F12", 105: "F13", 107: "F14", 113: "F15", 106: "F16", 64: "F17",
-        79: "F18", 80: "F19", 90: "F20"
+        79: "F18", 80: "F19", 90: "F20",
+        // Numeric keypad: separate keys from the top-row digits.
+        82: "Num 0", 83: "Num 1", 84: "Num 2", 85: "Num 3", 86: "Num 4", 87: "Num 5", 88: "Num 6",
+        89: "Num 7", 91: "Num 8", 92: "Num 9", 65: "Num .", 67: "Num *", 69: "Num +", 75: "Num /",
+        78: "Num -", 81: "Num =", 71: "Num Clear"
     ]
+    static let keypadZero: UInt32 = 82
 
     var preferenceValue: [String: Int] { ["keyCode": Int(keyCode), "modifiers": Int(modifiers)] }
 
@@ -70,81 +75,119 @@ extension Shortcut {
     }
 }
 
-/// What a shortcut does on a short or a long press.
+/// What a gesture does: a text source combined with a reading mode, or a
+/// helper such as repeating the last reading.
 enum ReadFunction: String, CaseIterable {
-    case read, primary, translate, repeatLast, screenRegion
+    // Raw values of 1.10 are kept so saved settings stay valid.
+    case read, translate, primary
+    case regionRead = "screenRegion", regionTranslate, regionPrimary
+    case repeatLast
 
     var title: String {
         switch self {
-        case .read: return "Читать"
-        case .primary: return "Читать основным голосом"
-        case .translate: return "Перевести и прочитать"
+        case .read: return "Текст: читать"
+        case .translate: return "Текст: перевести"
+        case .primary: return "Текст: основным голосом"
+        case .regionRead: return "Область: читать"
+        case .regionTranslate: return "Область: перевести"
+        case .regionPrimary: return "Область: основным голосом"
         case .repeatLast: return "Повторить последнее"
-        case .screenRegion: return "Обвести область и распознать"
         }
     }
 }
 
-/// One of the three global shortcuts with its short- and long-press functions.
+enum PressKind: CaseIterable { case short, double, long }
+
+/// One global shortcut with its single-, double- and long-press functions.
 struct ShortcutSlot: Equatable {
     var shortcut: Shortcut?
     var short: ReadFunction?
+    var double: ReadFunction?
     var long: ReadFunction?
 
-    static let count = 3
+    static let count = 4
     static func hotKeyID(_ index: Int) -> UInt32 { UInt32(index + 1) }
 
+    /// Source per shortcut, mode per gesture: single = read, double = translate,
+    /// long = primary voice. Option + Esc: text from the system; Command + Esc:
+    /// recognition under the pointer (the drawn region until that exists);
+    /// Control + Esc: drawn screen region. Control + Num 0 repeats.
     static let defaults: [ShortcutSlot] = [
-        ShortcutSlot(shortcut: Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.option), short: .read, long: .primary),
-        ShortcutSlot(shortcut: Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.command), short: .translate, long: .repeatLast),
-        ShortcutSlot(shortcut: Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.control), short: .screenRegion, long: nil)
+        ShortcutSlot(shortcut: Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.option),
+                     short: .read, double: .translate, long: .primary),
+        ShortcutSlot(shortcut: Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.command),
+                     short: .regionRead, double: .regionTranslate, long: .regionPrimary),
+        ShortcutSlot(shortcut: Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.control),
+                     short: .regionRead, double: .regionTranslate, long: .regionPrimary),
+        ShortcutSlot(shortcut: Shortcut(keyCode: Shortcut.keypadZero, modifiers: Shortcut.control),
+                     short: .repeatLast, double: nil, long: nil)
     ]
+
+    func function(_ kind: PressKind) -> ReadFunction? {
+        switch kind { case .short: return short; case .double: return double; case .long: return long }
+    }
+    mutating func set(_ function: ReadFunction?, for kind: PressKind) {
+        switch kind { case .short: short = function; case .double: double = function; case .long: long = function }
+    }
 
     var preferenceValue: [String: Any] {
         var value: [String: Any] = [:]
         if let shortcut { value.merge(shortcut.preferenceValue) { $1 } }
         if let short { value["short"] = short.rawValue }
+        if let double { value["double"] = double.rawValue }
         if let long { value["long"] = long.rawValue }
         return value
     }
 
-    init(shortcut: Shortcut?, short: ReadFunction?, long: ReadFunction?) {
-        self.shortcut = shortcut; self.short = short; self.long = long
+    init(shortcut: Shortcut?, short: ReadFunction?, double: ReadFunction?, long: ReadFunction?) {
+        self.shortcut = shortcut; self.short = short; self.double = double; self.long = long
     }
 
     init(preferenceValue value: Any?) {
         let dictionary = value as? [String: Any] ?? [:]
+        func function(_ key: String) -> ReadFunction? { (dictionary[key] as? String).flatMap(ReadFunction.init(rawValue:)) }
         shortcut = Shortcut(preferenceValue: dictionary)
-        short = (dictionary["short"] as? String).flatMap(ReadFunction.init(rawValue:))
-        long = (dictionary["long"] as? String).flatMap(ReadFunction.init(rawValue:))
+        short = function("short"); double = function("double"); long = function("long")
     }
 }
 
 enum ShortcutSettings {
     static let preferenceKey = "ShortcutSlots"
+    /// 2: source per shortcut, mode per gesture (version 1.11).
+    static let layoutKey = "ShortcutLayout"
+    static let layoutVersion = 2
     /// Format of version 1.9.0–1.9.1: one shortcut per action.
     static let actionPreferenceKey = "Shortcuts"
     static let thresholdKey = "LongPressThreshold"
     static let defaultThreshold = 0.4
     static let thresholdRange = 0.2...1.2
+    static let doubleIntervalKey = "DoublePressInterval"
+    static let defaultDoubleInterval = 0.3
+    static let doubleIntervalRange = 0.15...0.6
 
-    static func threshold(_ value: Any?) -> Double {
-        guard let number = value as? NSNumber, number.doubleValue.isFinite else { return defaultThreshold }
-        return min(thresholdRange.upperBound, max(thresholdRange.lowerBound, number.doubleValue))
+    static func threshold(_ value: Any?) -> Double { clamp(value, defaultThreshold, thresholdRange) }
+    static func doubleInterval(_ value: Any?) -> Double { clamp(value, defaultDoubleInterval, doubleIntervalRange) }
+    private static func clamp(_ value: Any?, _ fallback: Double, _ range: ClosedRange<Double>) -> Double {
+        guard let number = value as? NSNumber, number.doubleValue.isFinite else { return fallback }
+        return min(range.upperBound, max(range.lowerBound, number.doubleValue))
     }
 
-    /// Saved slots; otherwise the shortcuts of earlier versions are moved into
-    /// the three slots: reading (long press: primary voice), translation (long
-    /// press: repeat) and screen region. A separate primary-voice shortcut is
-    /// no longer needed and is dropped.
-    static func load(saved: [Any]?, actions: [String: Any]?, legacy: (String) -> Any?) -> [ShortcutSlot] {
+    /// Saved slots of the current layout as they are. Earlier settings keep
+    /// their keys, receive the current default functions, and gain the
+    /// Control + Num 0 repeat shortcut.
+    static func load(saved: [Any]?, layout: Int, actions: [String: Any]?, legacy: (String) -> Any?) -> [ShortcutSlot] {
         var slots: [ShortcutSlot]
-        if let saved, saved.count == ShortcutSlot.count {
+        if let saved, saved.count == ShortcutSlot.count, layout >= layoutVersion {
             slots = saved.map(ShortcutSlot.init(preferenceValue:))
         } else {
             slots = ShortcutSlot.defaults
-            for (index, name) in ["read", "translate", "screen"].enumerated() {
-                slots[index].shortcut = Shortcut(preferenceValue: actions?[name]) ?? legacyShortcut(name, legacy: legacy)
+            if let saved, saved.count == 3 {
+                // 1.10: three slots with read, translate and screen-region keys.
+                for index in 0..<3 { slots[index].shortcut = ShortcutSlot(preferenceValue: saved[index]).shortcut }
+            } else {
+                for (index, name) in ["read", "translate", "screen"].enumerated() {
+                    slots[index].shortcut = Shortcut(preferenceValue: actions?[name]) ?? legacyShortcut(name, legacy: legacy)
+                }
             }
         }
         // Never start with two slots on the same keys.
@@ -178,27 +221,35 @@ enum ShortcutSettings {
     }
 
     /// Where a function is assigned, for hints such as the screen-reading page.
-    static func assignment(of function: ReadFunction, in slots: [ShortcutSlot]) -> (index: Int, long: Bool)? {
+    static func assignment(of function: ReadFunction, in slots: [ShortcutSlot]) -> (index: Int, kind: PressKind)? {
         for (index, slot) in slots.enumerated() {
-            if slot.short == function { return (index, false) }
-            if slot.long == function { return (index, true) }
+            for kind in PressKind.allCases where slot.function(kind) == function { return (index, kind) }
         }
         return nil
     }
 }
 
-/// Short or long press of one shortcut. A press while something is being read
-/// stops it at once. Without a long-press function the short one runs on press.
+/// Single, double or long press of one shortcut.
+/// - A press while something is being read stops it at once.
+/// - Without long or double functions the single one runs on press.
+/// - With a long function, holding past the threshold runs it (after a click).
+/// - With a double function, a released single press waits for a second press;
+///   a second press within the interval runs the double function.
 struct PressGesture {
-    enum Outcome: Equatable { case none, stop, perform(long: Bool) }
+    enum Outcome: Equatable { case none, stop, perform(PressKind), awaitSecond }
     private(set) var held = false
     private var consumed = false
+    private var awaitingSecond = false
 
-    mutating func press(busy: Bool, hasLong: Bool) -> Outcome {
+    mutating func press(busy: Bool, hasLong: Bool, hasDouble: Bool) -> Outcome {
         held = true
         consumed = true
+        if awaitingSecond {
+            awaitingSecond = false
+            return .perform(.double)
+        }
         if busy { return .stop }
-        if !hasLong { return .perform(long: false) }
+        if !hasLong && !hasDouble { return .perform(.short) }
         consumed = false
         return .none
     }
@@ -206,13 +257,23 @@ struct PressGesture {
     mutating func thresholdReached() -> Outcome {
         guard held, !consumed else { return .none }
         consumed = true
-        return .perform(long: true)
+        return .perform(.long)
     }
 
-    mutating func release() -> Outcome {
+    mutating func release(hasDouble: Bool) -> Outcome {
         defer { held = false }
         guard held, !consumed else { return .none }
         consumed = true
-        return .perform(long: false)
+        if hasDouble {
+            awaitingSecond = true
+            return .awaitSecond
+        }
+        return .perform(.short)
+    }
+
+    mutating func secondPressWindowEnded() -> Outcome {
+        guard awaitingSecond else { return .none }
+        awaitingSecond = false
+        return .perform(.short)
     }
 }

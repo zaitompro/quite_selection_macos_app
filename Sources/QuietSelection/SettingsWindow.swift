@@ -15,8 +15,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     var onAddLanguage: ((String) -> Void)?
     var onRemoveLanguage: ((String) -> Void)?
     var onShortcutChange: ((Int, Shortcut) -> Void)?
-    var onSlotFunction: ((Int, Bool, ReadFunction?) -> Void)?
+    var onSlotFunction: ((Int, PressKind, ReadFunction?) -> Void)?
     var onThreshold: ((Double) -> Void)?
+    var onDoubleInterval: ((Double) -> Void)?
     var onShortcutRecording: ((Bool) -> Void)?
     var onReadRegion: (() -> Void)?
     var onScreenPermission: (() -> Void)?
@@ -34,12 +35,17 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     let translationSettings = TranslationSettingsView(frame: .zero)
     private(set) var recorders: [Int: ShortcutRecorder] = [:]
     private(set) var shortMenus: [Int: NSPopUpButton] = [:]
+    private(set) var doubleMenus: [Int: NSPopUpButton] = [:]
     private(set) var longMenus: [Int: NSPopUpButton] = [:]
     private var shortcutWarnings: [Int: NSTextField] = [:]
     let thresholdSlider = NSSlider(value: ShortcutSettings.defaultThreshold,
                                    minValue: ShortcutSettings.thresholdRange.lowerBound,
                                    maxValue: ShortcutSettings.thresholdRange.upperBound, target: nil, action: nil)
     private let thresholdValue = NSTextField(labelWithString: "")
+    let doubleSlider = NSSlider(value: ShortcutSettings.defaultDoubleInterval,
+                                minValue: ShortcutSettings.doubleIntervalRange.lowerBound,
+                                maxValue: ShortcutSettings.doubleIntervalRange.upperBound, target: nil, action: nil)
+    private let doubleValue = NSTextField(labelWithString: "")
     private let shortcutHint = SettingsUI.caption("")
     private let screenShortcut = NSTextField(labelWithString: "")
     private let loginSwitch = SettingsSwitch(frame: .zero)
@@ -111,7 +117,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         ], spacing: 12)
     }
 
-    private func functionMenu(slot: Int, long: Bool) -> NSPopUpButton {
+    private func functionMenu(slot: Int, kind: PressKind) -> NSPopUpButton {
         let menu = NSPopUpButton()
         menu.font = .systemFont(ofSize: SettingsUI.bodySize)
         menu.addItem(withTitle: "Ничего")
@@ -119,10 +125,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
             menu.addItem(withTitle: function.title)
             menu.lastItem?.representedObject = function.rawValue
         }
-        menu.tag = slot * 2 + (long ? 1 : 0)
+        menu.tag = slot * PressKind.allCases.count + PressKind.allCases.firstIndex(of: kind)!
         menu.target = self
         menu.action = #selector(slotFunctionChanged(_:))
-        menu.setAccessibilityLabel("Сочетание \(slot + 1), \(long ? "долгое" : "короткое") нажатие")
+        let gesture = kind == .short ? "одно нажатие" : kind == .double ? "двойное нажатие" : "долгое нажатие"
+        menu.setAccessibilityLabel("Сочетание \(slot + 1), \(gesture)")
         menu.setContentHuggingPriority(.required, for: .horizontal)
         menu.widthAnchor.constraint(greaterThanOrEqualToConstant: 250).isActive = true
         return menu
@@ -130,7 +137,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
 
     private func shortcutsPage() -> NSView {
         var views: [NSView] = [SettingsUI.pageTitle("Сочетания клавиш"),
-            SettingsUI.caption("У каждого сочетания два действия: короткое нажатие и долгое. Долгое срабатывает после щелчка — тогда клавиши можно отпустить. Любое сочетание во время чтения останавливает его.")]
+            SettingsUI.caption("У каждого сочетания три действия: одно нажатие, двойное и долгое. Долгое срабатывает после щелчка — тогда клавиши можно отпустить. По умолчанию сочетание выбирает, откуда взять текст, а нажатие — как читать: одно — читать, дважды — перевести, долго — основным голосом. Любое сочетание во время чтения останавливает его.")]
         for index in 0..<ShortcutSlot.count {
             let recorder = ShortcutRecorder(actionTitle: "сочетание \(index + 1)")
             recorder.onRecord = { [weak self] in self?.onShortcutChange?(index, $0) }
@@ -150,15 +157,18 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
             reset.tag = index
             let warning = SettingsUI.caption("")
             warning.isHidden = true
-            let short = functionMenu(slot: index, long: false)
-            let long = functionMenu(slot: index, long: true)
+            let short = functionMenu(slot: index, kind: .short)
+            let double = functionMenu(slot: index, kind: .double)
+            let long = functionMenu(slot: index, kind: .long)
             recorders[index] = recorder
             shortMenus[index] = short
+            doubleMenus[index] = double
             longMenus[index] = long
             shortcutWarnings[index] = warning
             views.append(SettingsUI.card([
                 SettingsUI.row("Сочетание \(index + 1)", caption: warning, controls: [recorder, reset]),
-                SettingsUI.row("Коротко", controls: [short]),
+                SettingsUI.row("Одно нажатие", controls: [short]),
+                SettingsUI.row("Дважды", controls: [double]),
                 SettingsUI.row("Долго", controls: [long])
             ]))
         }
@@ -170,10 +180,21 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         thresholdSlider.setAccessibilityLabel("Время удержания для долгого нажатия")
         thresholdValue.font = .monospacedDigitSystemFont(ofSize: SettingsUI.bodySize, weight: .medium)
         thresholdValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        doubleSlider.target = self
+        doubleSlider.action = #selector(doubleIntervalChanged)
+        doubleSlider.isContinuous = true
+        doubleSlider.trackFillColor = SettingsPalette.accent
+        doubleSlider.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        doubleSlider.setAccessibilityLabel("Время между нажатиями для двойного нажатия")
+        doubleValue.font = .monospacedDigitSystemFont(ofSize: SettingsUI.bodySize, weight: .medium)
+        doubleValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
         views += [
             SettingsUI.card([
                 SettingsUI.row("Долгое нажатие", caption: SettingsUI.caption("Сколько держать сочетание до щелчка"),
-                               controls: [thresholdSlider, thresholdValue])
+                               controls: [thresholdSlider, thresholdValue]),
+                SettingsUI.row("Двойное нажатие",
+                               caption: SettingsUI.caption("Сколько ждать второго нажатия; одно нажатие срабатывает после этой паузы"),
+                               controls: [doubleSlider, doubleValue])
             ]),
             shortcutHint
         ]
@@ -365,10 +386,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     }
 
     /// `failed`: slots whose keys could not be registered (taken by another app).
-    func updateShortcuts(_ slots: [ShortcutSlot], failed: Set<Int>, threshold: Double) {
+    func updateShortcuts(_ slots: [ShortcutSlot], failed: Set<Int>, threshold: Double, doubleInterval: Double) {
         for (index, slot) in slots.enumerated() {
             recorders[index]?.shortcut = slot.shortcut
             select(slot.short, in: shortMenus[index])
+            select(slot.double, in: doubleMenus[index])
             select(slot.long, in: longMenus[index])
             let warning = shortcutWarnings[index]
             if failed.contains(index) {
@@ -383,10 +405,12 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
             warning?.isHidden = warning?.stringValue.isEmpty ?? true
         }
         thresholdSlider.doubleValue = threshold
+        doubleSlider.doubleValue = doubleInterval
         updateThresholdValue()
-        if let place = ShortcutSettings.assignment(of: .screenRegion, in: slots),
+        if let place = ShortcutSettings.assignment(of: .regionRead, in: slots),
            let shortcut = slots[place.index].shortcut {
-            screenShortcut.stringValue = KeyNames.title(shortcut) + (place.long ? ", долгое нажатие" : "")
+            let gesture = place.kind == .short ? "" : place.kind == .double ? ", дважды" : ", долгое нажатие"
+            screenShortcut.stringValue = KeyNames.title(shortcut) + gesture
         } else {
             screenShortcut.stringValue = "Не назначено"
         }
@@ -400,6 +424,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
 
     private func updateThresholdValue() {
         thresholdValue.stringValue = String(format: "%.2f с", thresholdSlider.doubleValue).replacingOccurrences(of: ".", with: ",")
+        doubleValue.stringValue = String(format: "%.2f с", doubleSlider.doubleValue).replacingOccurrences(of: ".", with: ",")
     }
 
     func showShortcutMessage(_ message: String) { shortcutHint.stringValue = message }
@@ -575,7 +600,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     }
     @objc private func slotFunctionChanged(_ sender: NSPopUpButton) {
         let function = (sender.selectedItem?.representedObject as? String).flatMap(ReadFunction.init(rawValue:))
-        onSlotFunction?(sender.tag / 2, sender.tag % 2 == 1, function)
+        let kinds = PressKind.allCases
+        onSlotFunction?(sender.tag / kinds.count, kinds[sender.tag % kinds.count], function)
+    }
+    @objc private func doubleIntervalChanged() {
+        doubleSlider.doubleValue = (doubleSlider.doubleValue * 20).rounded() / 20
+        updateThresholdValue()
+        onDoubleInterval?(doubleSlider.doubleValue)
     }
     @objc private func thresholdChanged() {
         // Steps of 0.05 s are enough and easier to hear back.

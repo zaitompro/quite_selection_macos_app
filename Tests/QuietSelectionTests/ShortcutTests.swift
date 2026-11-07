@@ -22,70 +22,83 @@ import Foundation
         check(Shortcut(keyCode: 122, modifiers: Shortcut.command).title { _ in nil } == "Command + F1", "function key")
         check(Shortcut(keyCode: 200, modifiers: Shortcut.command).title { _ in nil } == "Command + Клавиша 200", "unknown key fallback")
 
-        // Migration into three slots from earlier versions.
-        func load(saved: [Any]? = nil, actions: [String: Any]? = nil, _ values: [String: Any] = [:]) -> [ShortcutSlot] {
-            ShortcutSettings.load(saved: saved, actions: actions, legacy: { values[$0] })
+        check(Shortcut(keyCode: Shortcut.keypadZero, modifiers: Shortcut.control).title { _ in "0" } == "Control + Num 0",
+              "keypad keys named apart from the top row")
+
+        // Layout: source per shortcut, mode per gesture.
+        func load(saved: [Any]? = nil, layout: Int = 0, actions: [String: Any]? = nil, _ values: [String: Any] = [:]) -> [ShortcutSlot] {
+            ShortcutSettings.load(saved: saved, layout: layout, actions: actions, legacy: { values[$0] })
         }
         let fresh = load()
-        check(fresh.count == 3, "three slots")
-        check(fresh[0].shortcut == Shortcut(keyCode: esc, modifiers: Shortcut.option | Shortcut.shift)
-              && fresh[0].short == .read && fresh[0].long == .primary, "no setting: Option + Shift + Esc as before, long = primary voice")
-        check(fresh[1].short == .translate && fresh[1].long == .repeatLast, "translation slot with repeat on long press")
-        check(fresh[2].shortcut == ShortcutSlot.defaults[2].shortcut && fresh[2].short == .screenRegion && fresh[2].long == nil,
-              "screen region slot")
+        check(fresh.count == 4, "four slots")
+        check(fresh[0].short == .read && fresh[0].double == .translate && fresh[0].long == .primary, "text source: read, translate, primary")
+        check(fresh[1].short == .regionRead && fresh[1].double == .regionTranslate && fresh[1].long == .regionPrimary,
+              "region source: read, translate, primary")
+        check(fresh[3].shortcut == Shortcut(keyCode: Shortcut.keypadZero, modifiers: Shortcut.control)
+              && fresh[3].short == .repeatLast && fresh[3].double == nil && fresh[3].long == nil, "Control + Num 0 repeats")
+        check(fresh[0].shortcut == Shortcut(keyCode: esc, modifiers: Shortcut.option | Shortcut.shift), "no setting: Option + Shift + Esc as before")
         let legacyChoices = load(["UseOptionEscape": NSNumber(value: true), "OCRShortcut": NSNumber(value: 1),
-                                  "PrimaryShortcut": NSNumber(value: 1), "TranslationShortcut": NSNumber(value: 1)])
-        check(legacyChoices[0].shortcut == optionEsc, "1.8 Option + Esc kept")
-        check(legacyChoices[1].shortcut == Shortcut(keyCode: esc, modifiers: Shortcut.command | Shortcut.shift), "1.8 Command + Shift + Esc kept")
-        check(legacyChoices[2].shortcut == Shortcut(keyCode: esc, modifiers: Shortcut.control | Shortcut.shift), "1.8 Control + Shift + Esc kept")
+                                  "TranslationShortcut": NSNumber(value: 1)])
+        check(legacyChoices[0].shortcut == optionEsc && legacyChoices[1].shortcut == Shortcut(keyCode: esc, modifiers: Shortcut.command | Shortcut.shift)
+              && legacyChoices[2].shortcut == Shortcut(keyCode: esc, modifiers: Shortcut.control | Shortcut.shift), "1.8 keys kept")
         let r = Shortcut(keyCode: 15, modifiers: Shortcut.command | Shortcut.option)
-        let actions: [String: Any] = ["read": r.preferenceValue, "translate": ShortcutSlot.defaults[1].shortcut!.preferenceValue,
-                                      "screen": ShortcutSlot.defaults[2].shortcut!.preferenceValue,
-                                      "primary": Shortcut(keyCode: esc, modifiers: Shortcut.control | Shortcut.option).preferenceValue]
-        let fromActions = load(actions: actions, ["UseOptionEscape": NSNumber(value: true)])
-        check(fromActions[0].shortcut == r && fromActions[0].long == .primary, "1.9 per-action shortcuts moved; primary on long press")
-        check(!fromActions.contains { $0.shortcut == Shortcut(keyCode: esc, modifiers: Shortcut.control | Shortcut.option) },
-              "three-key primary shortcut dropped")
+        let fromActions = load(actions: ["read": r.preferenceValue], ["UseOptionEscape": NSNumber(value: true)])
+        check(fromActions[0].shortcut == r, "1.9 per-action keys kept")
+        // 1.10: three slots saved with older functions get the new layout, same keys.
+        let old: [Any] = [["keyCode": 53, "modifiers": 2048, "short": "read", "long": "primary"],
+                          ["keyCode": 53, "modifiers": 256, "short": "translate", "long": "repeatLast"],
+                          ["keyCode": 53, "modifiers": 4096, "short": "screenRegion"]]
+        let migrated = load(saved: old, layout: 0)
+        check(migrated.map(\.shortcut) == ShortcutSlot.defaults.map(\.shortcut), "1.10 keys kept")
+        check(migrated.map { $0.short } == ShortcutSlot.defaults.map { $0.short }
+              && migrated.map { $0.double } == ShortcutSlot.defaults.map { $0.double }, "1.10 functions replaced by the new layout")
 
-        // Saved slots win; duplicates are resolved; round trip.
+        // Saved slots of this layout win; duplicates resolved; round trip.
         var custom = ShortcutSlot.defaults
-        custom[2].long = .repeatLast; custom[1].short = nil
-        let round = load(saved: custom.map(\.preferenceValue))
-        check(round == custom, "slot preference round trip, including empty functions")
+        custom[2].long = .repeatLast; custom[1].short = nil; custom[0].double = nil
+        check(load(saved: custom.map(\.preferenceValue), layout: 2) == custom, "slot round trip, including empty functions")
+        check(load(saved: custom.map(\.preferenceValue), layout: 0) != custom, "older layout number migrates")
         var clash = ShortcutSlot.defaults
         clash[1].shortcut = clash[0].shortcut
-        let resolved = load(saved: clash.map(\.preferenceValue))
-        check(Set(resolved.compactMap(\.shortcut)).count == resolved.compactMap(\.shortcut).count, "no two slots share keys after loading")
-        check(load(saved: [["keyCode": 15, "modifiers": Int(Shortcut.shift)], [:], [:]])[0].shortcut == nil, "invalid saved shortcut ignored")
+        let resolved = load(saved: clash.map(\.preferenceValue), layout: 2)
+        check(Set(resolved.compactMap(\.shortcut)).count == resolved.compactMap(\.shortcut).count, "no two slots share keys")
         check(ShortcutSettings.conflict(for: 0, shortcut: ShortcutSlot.defaults[2].shortcut!, in: fresh) == 2, "conflict found")
-        check(ShortcutSettings.conflict(for: 2, shortcut: ShortcutSlot.defaults[2].shortcut!, in: fresh) == nil, "own shortcut is no conflict")
-        check(ShortcutSettings.assignment(of: .screenRegion, in: custom)! == (2, false), "assignment of short function")
-        check(ShortcutSettings.assignment(of: .repeatLast, in: custom)! == (1, true), "assignment of long function")
-        check(ShortcutSettings.threshold(nil) == 0.4 && ShortcutSettings.threshold(NSNumber(value: 5.0)) == 1.2
-              && ShortcutSettings.threshold(NSNumber(value: 0.01)) == 0.2, "threshold default and limits")
+        check(ShortcutSettings.assignment(of: .regionRead, in: fresh)!.index == 1, "first assignment of a function")
+        check(ShortcutSettings.assignment(of: .regionTranslate, in: fresh)!.kind == .double, "double assignment reported")
+        check(ShortcutSettings.threshold(nil) == 0.4 && ShortcutSettings.threshold(NSNumber(value: 5.0)) == 1.2, "threshold limits")
+        check(ShortcutSettings.doubleInterval(nil) == 0.3 && ShortcutSettings.doubleInterval(NSNumber(value: 0.01)) == 0.15
+              && ShortcutSettings.doubleInterval(NSNumber(value: 2)) == 0.6, "double interval limits")
+        check(ReadFunction(rawValue: "screenRegion") == .regionRead, "1.10 raw value still valid")
 
         // System overlaps.
         check(optionEsc.systemConflict != nil, "Speak Selection overlap explained")
-        check(ShortcutSlot.defaults[1].shortcut!.systemConflict != nil, "Accessibility Reader overlap explained")
         check(Shortcut(keyCode: 15, modifiers: Shortcut.command | Shortcut.shift).systemConflict == nil, "no warning for unrelated keys")
 
-        // Short and long presses.
+        // Gestures.
         var g = PressGesture()
-        check(g.press(busy: false, hasLong: true) == .none && g.release() == .perform(long: false), "quick release: short")
+        check(g.press(busy: false, hasLong: false, hasDouble: false) == .perform(.short) && g.release(hasDouble: false) == .none,
+              "only a single function: runs on press")
         g = PressGesture()
-        check(g.press(busy: false, hasLong: true) == .none && g.thresholdReached() == .perform(long: true)
-              && g.release() == .none, "held past threshold: long once, release does nothing")
+        check(g.press(busy: false, hasLong: true, hasDouble: false) == .none && g.release(hasDouble: false) == .perform(.short),
+              "single with long available: on release")
         g = PressGesture()
-        check(g.press(busy: false, hasLong: false) == .perform(long: false) && g.release() == .none,
-              "no long function: short at once")
+        check(g.press(busy: false, hasLong: true, hasDouble: true) == .none && g.thresholdReached() == .perform(.long)
+              && g.release(hasDouble: true) == .none && g.secondPressWindowEnded() == .none, "held: long once")
         g = PressGesture()
-        check(g.press(busy: true, hasLong: true) == .stop && g.thresholdReached() == .none && g.release() == .none,
-              "press while reading only stops")
+        check(g.press(busy: false, hasLong: true, hasDouble: true) == .none && g.release(hasDouble: true) == .awaitSecond
+              && g.secondPressWindowEnded() == .perform(.short), "single tap waits, then single")
         g = PressGesture()
-        _ = g.press(busy: false, hasLong: true); _ = g.release()
-        check(g.thresholdReached() == .none, "late timer after release ignored")
+        _ = g.press(busy: false, hasLong: true, hasDouble: true); _ = g.release(hasDouble: true)
+        check(g.press(busy: false, hasLong: true, hasDouble: true) == .perform(.double) && g.thresholdReached() == .none
+              && g.release(hasDouble: true) == .none && g.secondPressWindowEnded() == .none, "second tap: double only")
+        g = PressGesture()
+        check(g.press(busy: true, hasLong: true, hasDouble: true) == .stop && g.release(hasDouble: true) == .none
+              && g.secondPressWindowEnded() == .none, "press while reading only stops")
+        g = PressGesture()
+        _ = g.press(busy: false, hasLong: true, hasDouble: false); _ = g.release(hasDouble: false)
+        check(g.thresholdReached() == .none, "late long timer after release ignored")
         var idle = PressGesture()
-        check(idle.release() == .none, "release without press ignored")
+        check(idle.release(hasDouble: true) == .none && idle.secondPressWindowEnded() == .none, "nothing without a press")
         print("\(count) checks passed; no keys registered.")
     }
 }

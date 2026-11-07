@@ -35,7 +35,7 @@ struct WindowTests {
                 delegate.controller.update(voices: voices, selection: selection, automatic: true, login: "enabled")
                 delegate.controller.updatePermissions(accessibility: true, screen: true)
                 delegate.controller.translationSettings.update(target: "ru", sources: ["en", "ja"], states: ["en": .supported, "ja": .supported])
-                delegate.controller.updateShortcuts(ShortcutSlot.defaults, failed: [], threshold: 0.4)
+                delegate.controller.updateShortcuts(ShortcutSlot.defaults, failed: [], threshold: 0.4, doubleInterval: 0.3)
                 try! delegate.controller.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
             }
             exit(0)
@@ -157,20 +157,27 @@ struct WindowTests {
         var slots = ShortcutSlot.defaults
         slots[1].shortcut = Shortcut(keyCode: 15, modifiers: Shortcut.control | Shortcut.option)
         slots[2].long = .repeatLast
-        delegate.controller.updateShortcuts(slots, failed: [1], threshold: 0.55)
+        delegate.controller.updateShortcuts(slots, failed: [1], threshold: 0.55, doubleInterval: 0.25)
         let recorders = delegate.controller.recorders
         precondition(recorders.count == ShortcutSlot.count)
         precondition(recorders[0]!.title == "Option + Esc" && recorders[1]!.title == "Control + Option + R")
+        precondition(recorders[3]!.title == "Control + Num 0")
         precondition(delegate.controller.shortMenus[0]!.titleOfSelectedItem == ReadFunction.read.title)
+        precondition(delegate.controller.doubleMenus[0]!.titleOfSelectedItem == ReadFunction.translate.title)
+        precondition(abs(delegate.controller.doubleSlider.doubleValue - 0.25) < 0.001)
         precondition(delegate.controller.longMenus[0]!.titleOfSelectedItem == ReadFunction.primary.title)
         precondition(delegate.controller.longMenus[2]!.titleOfSelectedItem == ReadFunction.repeatLast.title)
         precondition(abs(delegate.controller.thresholdSlider.doubleValue - 0.55) < 0.001)
-        var functionChange: (Int, Bool, ReadFunction?)?
+        var functionChange: (Int, PressKind, ReadFunction?)?
         delegate.controller.onSlotFunction = { functionChange = ($0, $1, $2) }
         let longMenu = delegate.controller.longMenus[1]!
         longMenu.selectItem(at: 0)
         longMenu.sendAction(longMenu.action, to: longMenu.target)
-        precondition(functionChange?.0 == 1 && functionChange?.1 == true && functionChange?.2 == nil)
+        precondition(functionChange?.0 == 1 && functionChange?.1 == .long && functionChange?.2 == nil)
+        let doubleMenu = delegate.controller.doubleMenus[2]!
+        doubleMenu.selectItem(at: 0)
+        doubleMenu.sendAction(doubleMenu.action, to: doubleMenu.target)
+        precondition(functionChange?.0 == 2 && functionChange?.1 == .double && functionChange?.2 == nil)
         var recordingEvents: [Bool] = []
         delegate.controller.onShortcutChange = { _, _ in }
         delegate.controller.onShortcutRecording = { recordingEvents.append($0) }
@@ -181,7 +188,7 @@ struct WindowTests {
         recorders[0]!.stop()
         precondition(!recorders[0]!.recording && recordingEvents.last == false && recorders[0]!.title == "Option + Esc")
         delegate.controller.selectSection(0)
-        print("shortcut_ui=PASS slots_short_long_menus_threshold_single_recording")
+        print("shortcut_ui=PASS four_slots_single_double_long_menus_timings_single_recording")
 
         // Local AppKit menu dispatch only: no posting or injecting keyboard events.
         func command(_ letter: String, code: UInt16) -> Bool {

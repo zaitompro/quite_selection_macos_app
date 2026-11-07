@@ -44,7 +44,7 @@ The settings window's additional-language list is height-constrained and scrolls
 
 ## Shortcuts and press gestures
 
-Three Carbon hot keys report press and release. `PressGesture` decides: a press while anything is being read stops it; without a long-press function the short one runs at once; otherwise release before the adjustable threshold (default 0.4 s) runs the short function and reaching it plays a click and runs the long one. A lost release event cannot block a shortcut for more than 2 s. "Repeat last" keeps only the last spoken text in memory until it is replaced or the app quits. Failures play one uncommon system sound (Basso); the long-press click is Pop.
+Four Carbon hot keys report press and release. Functions combine a source (text from the system, drawn screen region) with a mode (read, translate, primary voice), plus repeat-last. `PressGesture` decides: a press while anything is being read stops it; with only a single function it runs at once; holding past the adjustable threshold (default 0.4 s) plays a click and runs the long function; with a double function a released press waits for the double-press interval (default 0.3 s) and a second press runs the double function instead. Screen-region text goes through the same reading path as selected text, so translation and primary voice apply to it. A lost release event cannot block a shortcut for more than 2 s. "Repeat last" keeps only the last spoken text in memory until it is replaced or the app quits. Failures play one uncommon system sound (Basso); the long-press click is Pop.
 
 ## Copy fallback
 
