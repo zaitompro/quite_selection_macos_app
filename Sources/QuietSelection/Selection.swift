@@ -3,7 +3,7 @@ import Foundation
 // This layer has no platform side effects. Tests use a synthetic backend.
 enum SelectionFailure: Error, Equatable {
     case permission, noFocus, secureInput, secureKeyboard, noSelection, unsupported, tooLong
-    case invalidResponse, changedApplication, busy
+    case invalidResponse, changedApplication, busy, nothingUnderPointer
     case accessibility(Int32)
 
     var message: String {
@@ -18,6 +18,7 @@ enum SelectionFailure: Error, Equatable {
         case .invalidResponse: return "Некорректный ответ Accessibility"
         case .changedApplication: return "Активное приложение изменилось: чтение отменено"
         case .busy: return "Запрос отменён"
+        case .nothingUnderPointer: return "Под курсором нет текста, который передаёт система"
         case .accessibility(let code): return "Ошибка Accessibility: \(code)"
         }
     }

@@ -44,6 +44,10 @@ xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
     -module-cache-path "$PWD/build/module-cache" \
     Sources/QuietSelection/Shortcut.swift Tests/QuietSelectionTests/ShortcutTests.swift -o build/ShortcutTests
 build/ShortcutTests
+xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
+    -module-cache-path "$PWD/build/module-cache" \
+    Sources/QuietSelection/Selection.swift Sources/QuietSelection/PointerPolicy.swift Tests/QuietSelectionTests/PointerTests.swift -o build/PointerTests
+build/PointerTests
 python3 Tests/privacy_audit.py
 xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
     -module-cache-path "$PWD/build/module-cache" -framework AppKit -framework Carbon -framework Vision -framework ScreenCaptureKit \

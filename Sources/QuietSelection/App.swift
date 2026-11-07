@@ -46,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     private var allowed: [String] { selection.allowedLanguages }
     /// Bundle identifiers whose selection may be read by asking the app to copy it.
     private var copyApps: [String] = []
+    /// Read the paragraph under the pointer when it is not over the selection.
+    private var readUnderPointer = true
 
     static func availableVoices() -> [VoiceChoice] {
         Speech.installedVoices().map {
@@ -64,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
             legacyAllowed: preferences.stringArray(forKey: "AllowedLanguages") ?? ["ru", "en", "ja"])
         automatic = preferences.bool(forKey: "AutomaticLanguage")
         copyApps = preferences.stringArray(forKey: "CopyFallbackApps") ?? []
+        readUnderPointer = preferences.object(forKey: "ReadUnderPointer") as? Bool ?? true
         applySpeechSettings()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "Читать"
@@ -225,6 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         speech.voiceID = selection.selectedVoice(in: voices)?.id
         settings?.update(voices: voices, selection: selection, automatic: automatic, login: LoginLaunch.statusCode)
         settings?.updatePermissions(accessibility: AXIsProcessTrusted(), screen: CGPreflightScreenCaptureAccess())
+        settings?.updatePointerReading(readUnderPointer)
         settings?.updateShortcuts(slots, failed: failedShortcuts, threshold: longPressThreshold,
                                   doubleInterval: doublePressInterval)
         settings?.setStatus(message, busy: busy)
@@ -326,6 +330,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
             }
             controller.onLoginSettings = { LoginLaunch.openSettings() }
             controller.onPermission = { [weak self] in self?.permission() }
+            controller.onPointerReading = { [weak self] enabled in
+                guard let self else { return }
+                self.readUnderPointer = enabled
+                self.preferences.set(enabled, forKey: "ReadUnderPointer")
+                self.refresh()
+            }
             controller.onAddCopyApp = { [weak self] id in
                 guard let self, !self.copyApps.contains(id) else { return }
                 self.setCopyApps(self.copyApps + [id])
@@ -387,9 +397,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         // apps; it was validated with ChatGPT/Codex (see focus-investigation).
         let allowsAccessibilityPreparation = ChromiumFamily.contains(app)
         let allowsCopy = app.bundleIdentifier.map(copyApps.contains) ?? false
+        // What is under the pointer, found now so the moment of the key press counts.
+        let pointer = readUnderPointer ? PointerTarget.current().flatMap { $0.pid == ownPID ? nil : $0 } : nil
+        let pointerChromium = pointer.flatMap { NSRunningApplication(processIdentifier: $0.pid) }
+            .map(ChromiumFamily.contains) ?? false
         worker.async { [weak self] in
             var result: Result<String, Error>
             var viaCopy = false
+            var viaPointer = false
             var backend = AccessibilityBackend(pid: pid, allowsAccessibilityPreparation: allowsAccessibilityPreparation,
                                                frontPID: frontPID)
             if NSWorkspace.shared.frontmostApplication?.processIdentifier != frontPID {
@@ -417,6 +432,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                     viaCopy = true
                     result = Result { try ClipboardCopy.read(pid: pid, frontPID: frontPID) }
                 }
+                // The pointer over the selection reads the selection; anywhere else
+                // the paragraph under the pointer is read (nothing there: failure).
+                if let pointer, NSWorkspace.shared.frontmostApplication?.processIdentifier == frontPID {
+                    var usesSelection = false
+                    if case .success = result {
+                        usesSelection = viaCopy
+                            || PointerPolicy.readsSelection(selectionBounds: backend.selectionBounds(), pointer: pointer.point)
+                    }
+                    if !usesSelection {
+                        viaPointer = true
+                        if SecureInput.blocks(target: pointer.pid) {
+                            result = .failure(SelectionFailure.secureKeyboard)
+                        } else {
+                            result = Result { try PointerTextReader().read(pointer) }
+                            // Chromium builds web accessibility on the first query.
+                            if pointerChromium, case .failure = result,
+                               (try? AccessibilityBackend(pid: pointer.pid, allowsAccessibilityPreparation: true)
+                                   .prepareApplicationAccessibility()) == true,
+                               let fresh = pointer.refreshed() {
+                                result = Result { try PointerTextReader().read(fresh) }
+                            }
+                        }
+                    }
+                }
             }
             let diagnosticRole = backend.diagnostics.role
             let diagnosticStage = backend.diagnostics.stage
@@ -434,14 +473,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 switch result {
                 case .success(let text):
                     self.read(text, mode: mode)
-                    if viaCopy, self.speech.speaking {
+                    if viaPointer, self.speech.speaking {
+                        self.setStatus("Чтение текста под курсором; повторное сочетание — остановить")
+                    } else if viaCopy, self.speech.speaking {
                         self.setStatus("Чтение через копирование, буфер обмена восстановлен; повторное сочетание — остановить")
                     }
                 case .failure(let error):
                     if let copyFailure = error as? CopyFallbackFailure { self.fail(copyFailure.message); return }
                     let reason = error as? SelectionFailure
                     let detail: String
-                    if reason == .secureInput || reason == .secureKeyboard { detail = "" }
+                    if reason == .secureInput || reason == .secureKeyboard || viaPointer { detail = "" }
                     else if reason == .noFocus { detail = " (\(focusReport))" }
                     else { detail = " (\(diagnosticRole); \(diagnosticStage))" }
                     let hint = !allowsCopy && reason?.allowsCopyFallback == true

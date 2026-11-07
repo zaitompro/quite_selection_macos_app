@@ -186,6 +186,25 @@ struct AccessibilityBackend: SelectionBackend, FocusedElementSource {
         return result
     }
 
+    /// Screen rectangle of the current selection, if the application reports it.
+    /// Used only to decide whether the pointer is over the selection.
+    func selectionBounds() -> CGRect? {
+        guard let element = try? focusedElement() else { return nil }
+        var rectValue: CFTypeRef?
+        if let range = try? selectedRange(of: element), range.length > 0 {
+            var cfRange = CFRange(location: range.location, length: range.length)
+            guard let parameter = AXValueCreate(.cfRange, &cfRange), (try? prepare(element)) != nil else { return nil }
+            AXUIElementCopyParameterizedAttributeValue(element, kAXBoundsForRangeParameterizedAttribute as CFString,
+                                                       parameter, &rectValue)
+        } else if let marker = try? selectedMarkerRange(of: element) {
+            rectValue = try? markerValue(element, kAXBoundsForTextMarkerRangeParameterizedAttribute as CFString, marker)
+        }
+        guard let rectValue, CFGetTypeID(rectValue) == AXValueGetTypeID() else { return nil }
+        var rect = CGRect.null
+        guard AXValueGetValue(rectValue as! AXValue, .cgRect, &rect), !rect.isEmpty else { return nil }
+        return rect
+    }
+
     func string(forMarkerRange range: AXTextMarkerRange, of element: AXUIElement) throws -> String? {
         diagnostics.stage = "AXStringForTextMarkerRange"
         guard let value = try markerValue(element, kAXStringForTextMarkerRangeParameterizedAttribute as CFString, range)

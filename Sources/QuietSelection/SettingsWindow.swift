@@ -29,6 +29,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     var onQuit: (() -> Void)?
     var onRefresh: (() -> Void)?
     var onAddCopyApp: ((String) -> Void)?
+    var onPointerReading: ((Bool) -> Void)?
     var onRemoveCopyApp: ((String) -> Void)?
 
     let speechSettings = SpeechSettingsView(frame: .zero)
@@ -49,6 +50,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     private let shortcutHint = SettingsUI.caption("")
     private let screenShortcut = NSTextField(labelWithString: "")
     private let loginSwitch = SettingsSwitch(frame: .zero)
+    let pointerSwitch = SettingsSwitch(frame: .zero)
     private let loginNote = SettingsUI.caption("")
     private var loginSettings: NSButton!
     private var accessibilityPermission: PermissionRow!
@@ -101,10 +103,16 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "тестовая сборка"
         let quit = SettingsUI.button("Завершить QuietSelection", target: self, action: #selector(quit))
         quit.setAccessibilityHelp("Полностью завершает программу. Command + Q закрывает только настройки.")
+        pointerSwitch.target = self
+        pointerSwitch.action = #selector(pointerChanged)
+        pointerSwitch.setAccessibilityLabel("Читать текст под курсором")
         return SettingsUI.page([
             SettingsUI.pageTitle("Общие"),
             SettingsUI.card([
-                SettingsUI.row("Запускать при входе в macOS", caption: loginNote, controls: [loginSettings, loginSwitch])
+                SettingsUI.row("Запускать при входе в macOS", caption: loginNote, controls: [loginSettings, loginSwitch]),
+                SettingsUI.row("Читать текст под курсором",
+                               caption: SettingsUI.caption("Если курсор не над выделением, читается абзац под ним"),
+                               controls: [pointerSwitch])
             ]),
             SettingsUI.groupTitle("Разрешения"),
             SettingsUI.card([accessibilityPermission.view, screenPermissionGeneral.view]),
@@ -379,6 +387,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         loginSettings.isHidden = login != "requires_approval"
     }
 
+    func updatePointerReading(_ enabled: Bool) { pointerSwitch.state = enabled ? .on : .off }
+
     func updatePermissions(accessibility: Bool, screen: Bool) {
         accessibilityPermission.update(granted: accessibility)
         screenPermissionGeneral.update(granted: screen)
@@ -621,6 +631,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     @objc private func permission() { onPermission?() }
     @objc private func stop() { onStop?() }
     @objc private func quit() { onQuit?() }
+    @objc private func pointerChanged() { onPointerReading?(pointerSwitch.state == .on) }
     @objc private func copyAppAdded(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? String { onAddCopyApp?(id) }
     }

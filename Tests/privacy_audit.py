@@ -8,6 +8,11 @@ source_dir = root / "Sources" / "QuietSelection"
 # clipboard access, synthetic ⌘C and pressing a menu-bar Copy item.
 COPY_FILE = "ClipboardCopy.swift"
 COPY_ONLY = (r"\bNSPasteboard\b", r"\bCGEvent\b", r"\bAXUIElementPerformAction\b", r"\bkAXChildrenAttribute\b")
+# Reading under the pointer (on a reading shortcut only) is the single exception
+# for the pointer position, hit-testing, parents and whole element values.
+POINTER_FILE = "PointerText.swift"
+POINTER_ONLY = (r"NSEvent\.mouseLocation", r"\bAXUIElementCopyElementAtPosition\b", r"\bkAXValueAttribute\b",
+                r"\bkAXParentAttribute\b", r"\bkAXTitleAttribute\b")
 
 
 def strip(text):
@@ -17,8 +22,9 @@ def strip(text):
 
 
 files = {p.name: strip(p.read_text()) for p in source_dir.glob("*.swift")}
-code = "\n".join(text for name, text in files.items() if name != COPY_FILE)
+code = "\n".join(text for name, text in files.items() if name not in (COPY_FILE, POINTER_FILE))
 copy_code = files[COPY_FILE]
+pointer_code = files[POINTER_FILE]
 forbidden = (
     r"\bNSPasteboard\b", r"\bNSPerformService\b", r"\bCGEvent\b",
     r"\bAXUIElementSetAttributeValue\b", r"\bAXUIElementPerformAction\b",
@@ -37,6 +43,14 @@ for pattern in forbidden:
     assert not re.search(pattern, code), f"Forbidden API: {pattern}"
     if pattern not in COPY_ONLY:
         assert not re.search(pattern, copy_code), f"Forbidden API in {COPY_FILE}: {pattern}"
+    if pattern not in POINTER_ONLY:
+        assert not re.search(pattern, pointer_code), f"Forbidden API in {POINTER_FILE}: {pattern}"
+# Pointer reading invariants: bounded text, secure fields refused, no output,
+# no clipboard or events, and only a bounded walk to parents.
+assert "PointerPolicy.validated" in pointer_code and "AXSecureTextField" in pointer_code
+assert re.search(r"for _ in 0\.\.<10", pointer_code), "parent walk must stay bounded"
+assert not re.search(r"print\s*\(|FileManager|\.write\s*\(|UserDefaults|NSPasteboard|CGEvent", pointer_code)
+
 # Copy fallback invariants: menu bar only, Press only, events only to the target
 # process, no output of any kind.
 assert "kAXMenuBarAttribute" in copy_code
@@ -49,11 +63,12 @@ fallback = files["CopyFallback.swift"]
 assert "isRestorable" in fallback and "org.nspasteboard.concealedtype" in fallback
 assert "replace(with: saved)" in fallback and "changeCount" in fallback
 app = files["App.swift"]
+assert app.count("PointerTextReader()") >= 1 and "if let pointer," in app, "pointer reading only on a reading shortcut"
 assert app.count("ClipboardCopy.read(") == 1 and re.search(r"if allowsCopy,", app), "copy fallback only for listed apps"
 for line in code.splitlines():
     if re.search(r"\bprint\s*\(", line):
         assert not any(x in line for x in ("speechString", "\u005c(text)", "\u005c(result)", "localizedDescription"))
-print("PASS: source privacy guardrails (clipboard, ⌘C and menu press only in the copy fallback for listed apps; no AX tree walking, network client, or text logging)")
+print("PASS: source privacy guardrails (clipboard/⌘C/menu press only in the copy fallback; pointer position, hit-test and element text only in reading under the pointer; no network client or text logging)")
 
 ocr = (root / "Sources" / "QuietSelection" / "ScreenOCR.swift").read_text()
 assert "configuration.fileURL = nil" in ocr
