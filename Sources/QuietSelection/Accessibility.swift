@@ -10,13 +10,27 @@ final class AXDiagnostics {
 struct AccessibilityBackend: SelectionBackend, FocusedElementSource {
     let pid: pid_t
     let allowsAccessibilityPreparation: Bool
+    /// Overall budget for one selection request. Large Safari pages and long
+    /// Mail messages can take more than a second to answer a single query.
+    var timeLimit: TimeInterval = 4
     let diagnostics = AXDiagnostics()
-    private let deadline = Date().addingTimeInterval(2)
+    private let started = Date()
+    private var deadline: Date { started.addingTimeInterval(timeLimit) }
 
     private func prepare(_ element: AXUIElement) throws {
         let remaining = deadline.timeIntervalSinceNow
         guard remaining > 0 else { throw SelectionFailure.accessibility(AXError.cannotComplete.rawValue) }
-        AXUIElementSetMessagingTimeout(element, Float(min(0.5, remaining)))
+        AXUIElementSetMessagingTimeout(element, Float(min(1.5, remaining)))
+    }
+
+    /// Sends one read-only request. A busy application (kAXErrorCannotComplete)
+    /// gets exactly one repeat of the same request while time remains.
+    private func request(_ element: AXUIElement, _ send: () -> AXError) throws -> AXError {
+        try prepare(element)
+        let status = send()
+        guard status == .cannotComplete, deadline.timeIntervalSinceNow > 0.25 else { return status }
+        try prepare(element)
+        return send()
     }
 
     private func optional(_ status: AXError) throws -> Bool {
@@ -29,9 +43,8 @@ struct AccessibilityBackend: SelectionBackend, FocusedElementSource {
 
     private func attribute(_ element: AXUIElement, _ name: CFString) throws -> CFTypeRef? {
         // This only limits this client's message wait; it does not change target UI.
-        try prepare(element)
         var value: CFTypeRef?
-        guard try optional(AXUIElementCopyAttributeValue(element, name, &value)) else { return nil }
+        guard try optional(request(element) { AXUIElementCopyAttributeValue(element, name, &value) }) else { return nil }
         return value
     }
 
@@ -66,7 +79,8 @@ struct AccessibilityBackend: SelectionBackend, FocusedElementSource {
         diagnostics.stage = "AXRole приложения"
         // Chromium's BrowserCrApplication.accessibilityRole lazily enables its
         // accessibility mode. Use the standard read-only role attribute, never
-        // private activation flags. This path is restricted to ChatGPT/Codex.
+        // private activation flags. This path is restricted to Chromium-based
+        // browsers and Electron applications (see ChromiumFamily).
         // Reference: chromium/chromium chrome/browser/chrome_browser_application_mac.mm
         guard try text(AXUIElementCreateApplication(pid), kAXRoleAttribute as CFString) == "AXApplication" else {
             diagnostics.focusResults.append("роль прил.: недоступна")
@@ -80,9 +94,8 @@ struct AccessibilityBackend: SelectionBackend, FocusedElementSource {
     }
 
     private func focusAttribute(_ element: AXUIElement, _ name: CFString, label: String) throws -> AXUIElement? {
-        try prepare(element)
         var value: CFTypeRef?
-        let status = AXUIElementCopyAttributeValue(element, name, &value)
+        let status = try request(element) { AXUIElementCopyAttributeValue(element, name, &value) }
         // Fixed labels and numeric AX codes only: no titles, names, or text.
         let outcome = status == .success ? (value == nil ? "пусто" : "OK") : String(status.rawValue)
         diagnostics.focusResults.append("\(label): \(outcome)")
@@ -130,10 +143,10 @@ struct AccessibilityBackend: SelectionBackend, FocusedElementSource {
             throw SelectionFailure.invalidResponse
         }
         var value: CFTypeRef?
-        try prepare(element)
-        guard try optional(AXUIElementCopyParameterizedAttributeValue(
-            element, kAXStringForRangeParameterizedAttribute as CFString, parameter, &value
-        )) else { return nil }
+        guard try optional(request(element) {
+            AXUIElementCopyParameterizedAttributeValue(
+                element, kAXStringForRangeParameterizedAttribute as CFString, parameter, &value)
+        }) else { return nil }
         guard let value, CFGetTypeID(value) == CFStringGetTypeID(), let string = value as? String else {
             throw SelectionFailure.invalidResponse
         }
@@ -152,10 +165,9 @@ struct AccessibilityBackend: SelectionBackend, FocusedElementSource {
     private func markerValue(_ element: AXUIElement, _ name: CFString,
                              _ range: AXTextMarkerRange) throws -> CFTypeRef? {
         var value: CFTypeRef?
-        try prepare(element)
-        guard try optional(AXUIElementCopyParameterizedAttributeValue(element, name, range, &value)) else {
-            return nil
-        }
+        guard try optional(request(element) {
+            AXUIElementCopyParameterizedAttributeValue(element, name, range, &value)
+        }) else { return nil }
         return value
     }
 

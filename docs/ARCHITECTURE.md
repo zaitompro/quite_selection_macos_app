@@ -22,7 +22,13 @@ All application sources are in `Sources/QuietSelection/`.
 
 ## Data flow and invariants
 
-Selection reading resolves the foreground application's focused element, obtains only the selected fragment, then prepares local speech. Queries and text sizes are bounded; secure input is rejected. Accessibility behaviour varies between apps and can itself affect WebKit, so automated tests must be complemented by the user's Safari/Mail scrolling checks.
+Selection reading resolves the foreground application's focused element, obtains only the selected fragment, then prepares local speech. Queries and text sizes are bounded; secure input is rejected.
+
+Selection attributes are tried in order — `AXSelectedText`, `AXSelectedTextRange` with `AXStringForRange`, then the selected text-marker range — and an Accessibility error from one attribute moves on to the next instead of ending the request. Each query may wait up to 1.5 s and is repeated once if the target reports it is busy (`kAXErrorCannotComplete`); the whole request is limited to 4 s. A range reply may differ in length from the reported range (line endings, attachments), but a reply far longer than the range is rejected as not being the selection.
+
+Secure keyboard input is a system-wide flag. Reading is refused when the frontmost application holds it or when its holder cannot be identified; a password field left focused in another application does not block reading. Secure fields in the target are always rejected.
+
+Chromium browsers and Electron applications (detected by a `* Helper (Renderer).app` inside the bundle) may build web accessibility only after the first query. For them the application's standard `AXRole` is read, and an unsuccessful read is repeated once. No attributes are written; `AXManualAccessibility`/`AXEnhancedUserInterface` remain prohibited. The original evidence is the ChatGPT/Codex case; other Chromium/Electron apps need user confirmation. Accessibility behaviour varies between apps and can itself affect WebKit, so automated tests must be complemented by the user's Safari/Mail scrolling checks.
 
 OCR is a separate, explicit action: choose a region, capture that region, recognize locally, then speak. Images and recognized text stay in memory. There is no whole-screen or mailbox traversal as a fallback for selection.
 
@@ -39,6 +45,8 @@ The settings window's additional-language list is height-constrained and scrolls
 ## По-русски
 
 Приложение состоит из независимых частей: получение выделения, локальная речь, OCR выбранной области, настройки и системные сочетания. `App.swift` связывает их между собой. Ресурсы пакета находятся в `Resources/`, проверки — в `Tests/`, вспомогательные команды — в `Scripts/`.
+
+При ошибке одного способа получения выделения пробуется следующий; запросы ждут дольше и повторяются один раз, если приложение занято. Защищённый ввод в другом приложении больше не блокирует чтение. Для браузеров на Chromium и приложений на Electron доступность «будится» чтением роли приложения, без записи атрибутов.
 
 Ключевые ограничения: не использовать буфер обмена и имитацию копирования, не читать страницу или дерево доступности целиком вместо выделения, не отправлять пользовательский текст в сеть и не сохранять его на диск. OCR запускается только после явного выбора области. Основной язык отвечает и за ручной режим, и за неуверенное автоопределение; голос и скорость задаются для каждого языка отдельно.
 

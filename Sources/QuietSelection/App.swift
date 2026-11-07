@@ -224,11 +224,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     }
     private func trigger(mode: ReadMode = .normal) {
         if speech.speaking || pending || ocrBusy || regionPicker.active || translating { stop(); return }
-        guard !IsSecureEventInputEnabled() else { fail(SelectionFailure.secureInput.message); return }
         guard let app = NSWorkspace.shared.frontmostApplication else {
             fail(SelectionFailure.noFocus.message); return
         }
         let pid = app.processIdentifier
+        guard !SecureInput.blocks(target: pid) else { fail(SelectionFailure.secureKeyboard.message); return }
         if pid == ProcessInfo.processInfo.processIdentifier {
             do {
                 let selected = try LocalSelection.read(from: NSApp.keyWindow)
@@ -241,15 +241,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         let ticket = generation
         pending = true
         setStatus("Получение выделения…")
-        // Limit application-role preparation to the verified ChatGPT/Codex bundle.
-        let allowsAccessibilityPreparation = app.bundleIdentifier == "com.openai.codex"
+        // Application-role preparation only for Chromium browsers and Electron
+        // apps; it was validated with ChatGPT/Codex (see focus-investigation).
+        let allowsAccessibilityPreparation = ChromiumFamily.contains(app)
         worker.async { [weak self] in
-            let result: Result<String, Error>
-            let backend = AccessibilityBackend(pid: pid, allowsAccessibilityPreparation: allowsAccessibilityPreparation)
+            var result: Result<String, Error>
+            var backend = AccessibilityBackend(pid: pid, allowsAccessibilityPreparation: allowsAccessibilityPreparation)
             if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
                 result = .failure(SelectionFailure.changedApplication)
             } else {
                 result = Result { try SelectionReader(backend: backend).read() }
+                // Chromium may expose only its window chrome until web accessibility
+                // is built on the first query. Prepare once, then read once more.
+                if allowsAccessibilityPreparation, case .failure(let error) = result,
+                   [.unsupported, .noSelection].contains(error as? SelectionFailure),
+                   NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+                    let retry = AccessibilityBackend(pid: pid, allowsAccessibilityPreparation: false, timeLimit: 2)
+                    if (try? retry.prepareApplicationAccessibility()) == true {
+                        backend = retry
+                        result = Result { try SelectionReader(backend: retry).read() }
+                    }
+                }
             }
             let diagnosticRole = backend.diagnostics.role
             let diagnosticStage = backend.diagnostics.stage
@@ -258,9 +270,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 guard let self else { return }
                 self.pending = false
                 guard ticket == self.generation else { return }
-                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
-                      !IsSecureEventInputEnabled() else {
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
                     self.fail(SelectionFailure.changedApplication.message); return
+                }
+                guard !SecureInput.blocks(target: pid) else {
+                    self.fail(SelectionFailure.secureKeyboard.message); return
                 }
                 switch result {
                 case .success(let text):
@@ -268,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 case .failure(let error):
                     let reason = error as? SelectionFailure
                     let detail: String
-                    if reason == .secureInput { detail = "" }
+                    if reason == .secureInput || reason == .secureKeyboard { detail = "" }
                     else if reason == .noFocus { detail = " (\(focusReport))" }
                     else { detail = " (\(diagnosticRole); \(diagnosticStage))" }
                     self.fail((reason?.message ?? "Не удалось получить выделение") + detail)
@@ -485,7 +499,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     }
     private func triggerOCR() {
         if regionPicker.active || ocrBusy || speech.speaking || pending || translating { stop(); return }
-        guard !IsSecureEventInputEnabled() else { fail(SelectionFailure.secureInput.message); return }
+        guard !SecureInput.blocks(target: NSWorkspace.shared.frontmostApplication?.processIdentifier) else {
+            fail(SelectionFailure.secureKeyboard.message); return
+        }
         guard CGPreflightScreenCaptureAccess() else { screenPermission(); return }
         ocrGeneration += 1
         let ticket = ocrGeneration
@@ -502,7 +518,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                     try await Task.sleep(nanoseconds: 150_000_000)
                     try Task.checkCancellation()
                     guard let self, ticket == self.ocrGeneration else { return }
-                    guard !IsSecureEventInputEnabled(), CGPreflightScreenCaptureAccess() else {
+                    guard !SecureInput.blocks(target: NSWorkspace.shared.frontmostApplication?.processIdentifier),
+                          CGPreflightScreenCaptureAccess() else {
                         throw ScreenReadingError.capture
                     }
                     let image = try await RegionCapture.image(in: rect)
@@ -672,5 +689,50 @@ struct QuietSelectionMain {
             print("rate_comparison=PASS slow_seconds=\(durations[0]) fast_seconds=\(durations[1])")
         }
         return 0
+    }
+}
+
+enum SecureInput {
+    /// The process holding secure keyboard input, as reported by the window server.
+    static func holder() -> Int32? {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+              let number = session["kCGSSessionSecureInputPID"] as? NSNumber else { return nil }
+        let pid = number.int32Value
+        return pid > 0 ? pid : nil
+    }
+
+    static func blocks(target: Int32?) -> Bool {
+        let enabled = IsSecureEventInputEnabled()
+        return SecureInputPolicy.blocks(enabled: enabled, holder: enabled ? holder() : nil, target: target)
+    }
+}
+
+@MainActor
+enum ChromiumFamily {
+    private static var cache: [String: Bool] = [:]
+
+    /// Chromium browsers and Electron apps ship a "<Name> Helper (Renderer).app".
+    /// Only file names inside the application bundle are inspected.
+    static func contains(_ app: NSRunningApplication) -> Bool {
+        if app.bundleIdentifier == "com.openai.codex" { return true }
+        guard let bundle = app.bundleURL else { return false }
+        if let known = cache[bundle.path] { return known }
+        let frameworks = bundle.appendingPathComponent("Contents/Frameworks")
+        var found = hasRenderer(frameworks)
+        if !found {
+            let files = FileManager.default
+            let names = (try? files.contentsOfDirectory(atPath: frameworks.path)) ?? []
+            for name in names where name.hasSuffix(".framework") {
+                let helpers = frameworks.appendingPathComponent(name).appendingPathComponent("Versions/Current/Helpers")
+                if hasRenderer(helpers) { found = true; break }
+            }
+        }
+        cache[bundle.path] = found
+        return found
+    }
+
+    private static func hasRenderer(_ directory: URL) -> Bool {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        return names.contains { $0.hasSuffix(" Helper (Renderer).app") }
     }
 }

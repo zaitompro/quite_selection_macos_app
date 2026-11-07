@@ -11,14 +11,19 @@ final class FakeBackend: SelectionBackend {
     var markerLength: Int? = nil
     var markerText: String? = nil
     var failure: SelectionFailure?
+    var errors: [String: SelectionFailure] = [:]
     var calls: [String] = []
+    private func call(_ name: String) throws {
+        calls.append(name)
+        if let error = errors[name] { throw error }
+    }
     func focusedElement() throws -> Int? { calls.append("focus"); if let failure { throw failure }; return focus }
     func role(of element: Int) -> String? { calls.append("role"); return roleValue }
     func subrole(of element: Int) -> String? { calls.append("subrole"); return subroleValue }
-    func selectedText(of element: Int) -> String? { calls.append("selected"); return text }
-    func selectedRange(of element: Int) -> TextRange? { calls.append("range"); return range }
-    func string(for range: TextRange, of element: Int) -> String? { calls.append("rangeString"); return rangeText }
-    func selectedMarkerRange(of element: Int) -> Int? { calls.append("marker"); return marker }
+    func selectedText(of element: Int) throws -> String? { try call("selected"); return text }
+    func selectedRange(of element: Int) throws -> TextRange? { try call("range"); return range }
+    func string(for range: TextRange, of element: Int) throws -> String? { try call("rangeString"); return rangeText }
+    func selectedMarkerRange(of element: Int) throws -> Int? { try call("marker"); return marker }
     func length(of range: Int, in element: Int) -> Int? { calls.append("markerLength"); return markerLength }
     func string(forMarkerRange range: Int, of element: Int) -> String? { calls.append("markerString"); return markerText }
 }
@@ -60,7 +65,12 @@ final class FakeBackend: SelectionBackend {
         let largeText = FakeBackend(); largeText.text = String(repeating: "x", count: 60_001)
         check(fails(largeText, .tooLong), "oversize direct selection")
         let mismatch = FakeBackend(); mismatch.text = nil; mismatch.range = TextRange(location: 0, length: 5); mismatch.rangeText = "x"
-        check(fails(mismatch, .invalidResponse), "range response length mismatch")
+        check(try SelectionReader(backend: mismatch).read() == "x", "shorter range response accepted (attachments, line endings)")
+        let crlf = FakeBackend(); crlf.text = nil; crlf.range = TextRange(location: 0, length: 9); crlf.rangeText = "One\r\nTwo\r\n"
+        check(try SelectionReader(backend: crlf).read() == crlf.rangeText, "slightly longer range response accepted")
+        let ignored = FakeBackend(); ignored.text = nil; ignored.range = TextRange(location: 0, length: 5)
+        ignored.rangeText = String(repeating: "x", count: 5 * 2 + 65)
+        check(fails(ignored, .invalidResponse), "reply that ignores the requested range rejected")
         let window = FakeBackend(); window.roleValue = "AXWindow"
         check(fails(window, .unsupported) && !window.calls.contains("selected"), "window not a text source")
         let timeout = FakeBackend(); timeout.failure = .accessibility(-25204)
@@ -94,6 +104,35 @@ final class FakeBackend: SelectionBackend {
         check(try SelectionReader(backend: emptyEditor).read() == emptyEditor.markerText, "editor retains focus while document has a selection")
         emptyEditor.calls = []; emptyEditor.markerLength = 0
         check(fails(emptyEditor, .noSelection) && !emptyEditor.calls.contains("markerString"), "collapsed document range never reads text")
+        let busyText = FakeBackend(); busyText.text = nil; busyText.errors["selected"] = .accessibility(-25204)
+        busyText.range = TextRange(location: 0, length: 4); busyText.rangeText = "Тест"
+        check(try SelectionReader(backend: busyText).read() == "Тест", "AXSelectedText error falls back to selected range")
+        let busyRange = FakeBackend(); busyRange.text = nil; busyRange.errors["range"] = .accessibility(-25200)
+        busyRange.marker = 42; busyRange.markerLength = 4; busyRange.markerText = "Тест"
+        check(try SelectionReader(backend: busyRange).read() == "Тест", "AXSelectedTextRange error falls back to marker range")
+        let busyString = FakeBackend(); busyString.text = nil; busyString.range = TextRange(location: 0, length: 4)
+        busyString.errors["rangeString"] = .accessibility(-25204)
+        busyString.marker = 42; busyString.markerLength = 4; busyString.markerText = "Тест"
+        check(try SelectionReader(backend: busyString).read() == "Тест", "AXStringForRange error falls back to marker range")
+        let missingString = FakeBackend(); missingString.text = nil; missingString.range = TextRange(location: 0, length: 4)
+        missingString.marker = 42; missingString.markerLength = 4; missingString.markerText = "Тест"
+        check(try SelectionReader(backend: missingString).read() == "Тест", "unsupported AXStringForRange falls back to marker range")
+        let allBusy = FakeBackend(); allBusy.text = nil
+        allBusy.errors = ["selected": .accessibility(-25204), "marker": .accessibility(-25200)]
+        check(fails(allBusy, .accessibility(-25204)), "first Accessibility error reported when every method fails")
+        let busyNoMarker = FakeBackend(); busyNoMarker.text = nil; busyNoMarker.errors["selected"] = .accessibility(-25204)
+        check(fails(busyNoMarker, .accessibility(-25204)), "Accessibility error kept when marker range is absent")
+        let emptyThenBusy = FakeBackend(); emptyThenBusy.text = ""; emptyThenBusy.errors["marker"] = .accessibility(-25204)
+        check(fails(emptyThenBusy, .noSelection), "reported empty selection wins over later errors")
+        let secureBusy = FakeBackend(); secureBusy.subroleValue = "AXSecureTextField"; secureBusy.errors["selected"] = .accessibility(-25204)
+        check(fails(secureBusy, .secureInput) && secureBusy.calls == ["focus", "role", "subrole"], "secure field never read even with fallbacks")
+        let unrelated = FakeBackend(); unrelated.errors["selected"] = .invalidResponse
+        check(fails(unrelated, .invalidResponse) && !unrelated.calls.contains("range"), "non-Accessibility failures are not masked")
+        check(!SecureInputPolicy.blocks(enabled: false, holder: nil, target: 10), "no secure input, no block")
+        check(SecureInputPolicy.blocks(enabled: true, holder: 10, target: 10), "secure input in target application blocks")
+        check(!SecureInputPolicy.blocks(enabled: true, holder: 20, target: 10), "secure input held elsewhere does not block")
+        check(SecureInputPolicy.blocks(enabled: true, holder: nil, target: 10), "unknown secure input holder blocks")
+        check(SecureInputPolicy.blocks(enabled: true, holder: 20, target: nil), "unknown target blocks")
         let secureRole = FakeBackend(); secureRole.roleValue = "AXSecureTextField"
         check(fails(secureRole, .secureInput) && !secureRole.calls.contains("selected"), "secure role never reads text")
         let list = FakeBackend(); list.text = nil; list.roleValue = "AXList"

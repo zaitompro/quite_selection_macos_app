@@ -2,7 +2,7 @@ import Foundation
 
 // This layer has no platform side effects. Tests use a synthetic backend.
 enum SelectionFailure: Error, Equatable {
-    case permission, noFocus, secureInput, noSelection, unsupported, tooLong
+    case permission, noFocus, secureInput, secureKeyboard, noSelection, unsupported, tooLong
     case invalidResponse, changedApplication, busy
     case accessibility(Int32)
 
@@ -11,6 +11,7 @@ enum SelectionFailure: Error, Equatable {
         case .permission: return "Нужно разрешение Accessibility для QuietSelection"
         case .noFocus: return "Нет доступного элемента с фокусом"
         case .secureInput: return "Защищённое поле: чтение запрещено"
+        case .secureKeyboard: return "В активном приложении включён защищённый ввод (поле пароля или Secure Keyboard Entry): чтение запрещено"
         case .noSelection: return "Нет выделенного текста"
         case .unsupported: return "Элемент с фокусом не отдаёт выделение через AX"
         case .tooLong: return "Выделение длиннее 60 000 символов UTF-16"
@@ -19,6 +20,24 @@ enum SelectionFailure: Error, Equatable {
         case .busy: return "Запрос отменён"
         case .accessibility(let code): return "Ошибка Accessibility: \(code)"
         }
+    }
+
+    var isAccessibilityError: Bool {
+        if case .accessibility = self { return true }
+        return false
+    }
+}
+
+// macOS reports secure keyboard input system-wide. Refuse reading when the
+// target application holds it, or when its holder cannot be identified.
+// A password field left focused in some other application does not block
+// reading the frontmost application's selection; its own secure fields are
+// still rejected by SelectionReader.
+enum SecureInputPolicy {
+    static func blocks(enabled: Bool, holder: Int32?, target: Int32?) -> Bool {
+        guard enabled else { return false }
+        guard let holder, let target else { return true }
+        return holder == target
     }
 }
 
@@ -58,34 +77,60 @@ struct SelectionReader<Backend: SelectionBackend> {
         guard let role, !["AXApplication", "AXWindow", "AXMenu", "AXMenuItem"].contains(role)
         else { throw SelectionFailure.unsupported }
 
-        let direct = try backend.selectedText(of: element)
+        // An Accessibility error from one selection attribute does not rule out
+        // the others: applications often implement only some of them.
+        var axError: SelectionFailure?
+        let direct: String?
+        do { direct = try backend.selectedText(of: element) }
+        catch let error as SelectionFailure where error.isAccessibilityError { axError = error; direct = nil }
         if let direct, !direct.isEmpty { return try validate(direct) }
         // Only the actual selection range, only on this same focused element.
         // AXValue (whole document) is deliberately not used.
-        guard let range = try backend.selectedRange(of: element) else {
+        let reported: TextRange?
+        do { reported = try backend.selectedRange(of: element) }
+        catch let error as SelectionFailure where error.isAccessibilityError { axError = axError ?? error; reported = nil }
+        guard let range = reported else {
             // These web-content attributes are public in Apple SDK 26.5's
             // AXWebConstants.h. Use only the selected range, never document bounds.
-            return try readWebSelection(element, emptyReported: direct != nil)
+            return try readWebSelection(element, emptyReported: direct != nil, previous: axError)
         }
         guard range.location >= 0, range.length >= 0,
               range.location <= Int.max - range.length else {
             throw SelectionFailure.invalidResponse
         }
         guard range.length > 0 else {
-            return try readWebSelection(element, emptyReported: true)
+            return try readWebSelection(element, emptyReported: true, previous: axError)
         }
         guard range.length <= Self.limit else { throw SelectionFailure.tooLong }
-        guard let text = try backend.string(for: range, of: element) else {
-            throw SelectionFailure.unsupported
+        let ranged: String?
+        do { ranged = try backend.string(for: range, of: element) }
+        catch let error as SelectionFailure where error.isAccessibilityError { axError = axError ?? error; ranged = nil }
+        guard let text = ranged else {
+            return try readWebSelection(element, emptyReported: false, previous: axError)
         }
-        guard text.utf16.count == range.length else { throw SelectionFailure.invalidResponse }
+        // Lengths legitimately differ a little (line endings, attachments,
+        // composed characters). A much longer reply means the application
+        // ignored the requested range, so it is not treated as the selection.
+        guard text.utf16.count <= Self.maximumLength(forRange: range.length) else {
+            throw SelectionFailure.invalidResponse
+        }
         return try validate(text)
     }
 
-    private func readWebSelection(_ element: Backend.Element, emptyReported: Bool = false) throws -> String {
+    static func maximumLength(forRange length: Int) -> Int { length * 2 + 64 }
+
+    private func readWebSelection(_ element: Backend.Element, emptyReported: Bool = false,
+                                  previous: SelectionFailure? = nil) throws -> String {
         // Firefox delegates these attributes from many roles, not just AXWebArea.
-        guard let range = try backend.selectedMarkerRange(of: element) else {
-            throw emptyReported ? SelectionFailure.noSelection : SelectionFailure.unsupported
+        let marker: Backend.MarkerRange?
+        do { marker = try backend.selectedMarkerRange(of: element) }
+        catch let error as SelectionFailure where error.isAccessibilityError {
+            if emptyReported { throw SelectionFailure.noSelection }
+            throw previous ?? error
+        }
+        guard let range = marker else {
+            if emptyReported { throw SelectionFailure.noSelection }
+            throw previous ?? SelectionFailure.unsupported
         }
         guard let length = try backend.length(of: range, in: element) else { throw SelectionFailure.unsupported }
         guard length >= 0 else { throw SelectionFailure.invalidResponse }
