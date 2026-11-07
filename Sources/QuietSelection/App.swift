@@ -260,12 +260,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     }
     private func trigger(mode: ReadMode = .normal) {
         if speech.speaking || pending || ocrBusy || regionPicker.active || translating { stop(); return }
-        guard let app = NSWorkspace.shared.frontmostApplication else {
+        guard let front = NSWorkspace.shared.frontmostApplication else {
             fail(SelectionFailure.noFocus.message); return
         }
-        let pid = app.processIdentifier
+        let frontPID = front.processIdentifier
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        // Read where the keyboard is: a launcher panel such as Alfred receives
+        // typing and selection without becoming the frontmost application.
+        let pid = AXIsProcessTrusted()
+            ? FocusTarget.pid(frontmost: frontPID, keyboardFocusOwner: KeyboardFocus.ownerPID(), own: ownPID)
+            : frontPID
+        let app = pid == frontPID ? front : (NSRunningApplication(processIdentifier: pid) ?? front)
         guard !SecureInput.blocks(target: pid) else { fail(SelectionFailure.secureKeyboard.message); return }
-        if pid == ProcessInfo.processInfo.processIdentifier {
+        if pid == ownPID {
             do {
                 let selected = try LocalSelection.read(from: NSApp.keyWindow)
                 read(selected, mode: mode)
@@ -284,8 +291,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         worker.async { [weak self] in
             var result: Result<String, Error>
             var viaCopy = false
-            var backend = AccessibilityBackend(pid: pid, allowsAccessibilityPreparation: allowsAccessibilityPreparation)
-            if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+            var backend = AccessibilityBackend(pid: pid, allowsAccessibilityPreparation: allowsAccessibilityPreparation,
+                                               frontPID: frontPID)
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier != frontPID {
                 result = .failure(SelectionFailure.changedApplication)
             } else {
                 result = Result { try SelectionReader(backend: backend).read() }
@@ -293,8 +301,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 // is built on the first query. Prepare once, then read once more.
                 if allowsAccessibilityPreparation, case .failure(let error) = result,
                    [.unsupported, .noSelection].contains(error as? SelectionFailure),
-                   NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-                    let retry = AccessibilityBackend(pid: pid, allowsAccessibilityPreparation: false, timeLimit: 2)
+                   NSWorkspace.shared.frontmostApplication?.processIdentifier == frontPID {
+                    let retry = AccessibilityBackend(pid: pid, allowsAccessibilityPreparation: false, timeLimit: 2,
+                                                     frontPID: frontPID)
                     if (try? retry.prepareApplicationAccessibility()) == true {
                         backend = retry
                         result = Result { try SelectionReader(backend: retry).read() }
@@ -304,10 +313,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 // then restore the previous clipboard (see CopyFallback.swift).
                 if allowsCopy, case .failure(let error) = result,
                    (error as? SelectionFailure)?.allowsCopyFallback == true,
-                   NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                   NSWorkspace.shared.frontmostApplication?.processIdentifier == frontPID,
                    !SecureInput.blocks(target: pid) {
                     viaCopy = true
-                    result = Result { try ClipboardCopy.read(pid: pid) }
+                    result = Result { try ClipboardCopy.read(pid: pid, frontPID: frontPID) }
                 }
             }
             let diagnosticRole = backend.diagnostics.role
@@ -317,7 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 guard let self else { return }
                 self.pending = false
                 guard ticket == self.generation else { return }
-                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == frontPID else {
                     self.fail(SelectionFailure.changedApplication.message); return
                 }
                 guard !SecureInput.blocks(target: pid) else {

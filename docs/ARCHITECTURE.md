@@ -24,6 +24,8 @@ All application sources are in `Sources/QuietSelection/`.
 
 Selection reading resolves the foreground application's focused element, obtains only the selected fragment, then prepares local speech. Queries and text sizes are bounded; secure input is rejected.
 
+The application read is the one holding keyboard focus (system-wide `AXFocusedApplication`, process ID only). It is normally the frontmost application; launcher panels such as Alfred take keyboard focus without becoming frontmost, and are read instead. Switching the frontmost application still cancels the request.
+
 Selection attributes are tried in order — `AXSelectedText`, `AXSelectedTextRange` with `AXStringForRange`, then the selected text-marker range — and an Accessibility error from one attribute moves on to the next instead of ending the request. Each query may wait up to 1.5 s and is repeated once if the target reports it is busy (`kAXErrorCannotComplete`); the whole request is limited to 4 s. A range reply may differ in length from the reported range (line endings, attachments), but a reply far longer than the range is rejected as not being the selection.
 
 Secure keyboard input is a system-wide flag. Reading is refused when the frontmost application holds it or when its holder cannot be identified; a password field left focused in another application does not block reading. Secure fields in the target are always rejected.

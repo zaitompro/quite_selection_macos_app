@@ -41,3 +41,14 @@ struct FocusedElementResolver<Source: FocusedElementSource> {
         return element
     }
 }
+
+enum FocusTarget {
+    /// The application whose selection is read. Normally the frontmost one, but a
+    /// panel that takes keyboard focus without becoming frontmost (Alfred and
+    /// similar launchers) is where the user is typing and selecting, so it wins.
+    /// QuietSelection's own panels never redirect reading.
+    static func pid(frontmost: Int32, keyboardFocusOwner: Int32?, own: Int32) -> Int32 {
+        guard let owner = keyboardFocusOwner, owner > 0, owner != own else { return frontmost }
+        return owner
+    }
+}

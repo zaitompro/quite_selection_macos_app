@@ -13,6 +13,9 @@ struct AccessibilityBackend: SelectionBackend, FocusedElementSource {
     /// Overall budget for one selection request. Large Safari pages and long
     /// Mail messages can take more than a second to answer a single query.
     var timeLimit: TimeInterval = 4
+    /// The frontmost application when reading started. Differs from `pid` when a
+    /// non-activating panel (for example, Alfred) holds keyboard focus.
+    var frontPID: pid_t? = nil
     let diagnostics = AXDiagnostics()
     private let started = Date()
     private var deadline: Date { started.addingTimeInterval(timeLimit) }
@@ -61,7 +64,7 @@ struct AccessibilityBackend: SelectionBackend, FocusedElementSource {
     }
 
     var isTargetFrontmost: Bool {
-        NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == (frontPID ?? pid)
     }
 
     func applicationFocus() throws -> AXUIElement? {
@@ -191,5 +194,22 @@ struct AccessibilityBackend: SelectionBackend, FocusedElementSource {
             throw SelectionFailure.invalidResponse
         }
         return string
+    }
+}
+
+enum KeyboardFocus {
+    /// Process that currently receives keyboard input, as reported by the
+    /// system-wide Accessibility element. Only its process ID is read.
+    static func ownerPID() -> pid_t? {
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.5)
+        for attribute in [kAXFocusedApplicationAttribute, kAXFocusedUIElementAttribute] {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(system, attribute as CFString, &value) == .success,
+                  let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { continue }
+            var pid: pid_t = 0
+            if AXUIElementGetPid(value as! AXUIElement, &pid) == .success, pid > 0 { return pid }
+        }
+        return nil
     }
 }

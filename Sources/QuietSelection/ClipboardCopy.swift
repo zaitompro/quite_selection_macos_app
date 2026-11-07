@@ -101,10 +101,15 @@ enum CopyCommand {
 
 enum ClipboardCopy {
     /// Runs on the selection worker; blocks for at most a few seconds.
-    static func read(pid: pid_t) throws -> String {
+    static func read(pid: pid_t, frontPID: pid_t) throws -> String {
         let reader = CopyFallbackReader(store: SystemClipboard()) { Thread.sleep(forTimeInterval: $0) }
         return try reader.read(
             attempts: [{ CopyCommand.pressCopyMenuItem(pid: pid) }, { CopyCommand.sendCommandC(pid: pid) }],
-            isTargetFrontmost: { NSWorkspace.shared.frontmostApplication?.processIdentifier == pid })
+            isTargetFrontmost: {
+                // The user has not switched applications, and a panel such as
+                // Alfred still holds keyboard focus.
+                NSWorkspace.shared.frontmostApplication?.processIdentifier == frontPID
+                    && (pid == frontPID || KeyboardFocus.ownerPID() == pid)
+            })
     }
 }

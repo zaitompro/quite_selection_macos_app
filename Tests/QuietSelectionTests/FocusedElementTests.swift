@@ -114,5 +114,14 @@ struct FocusedElementTests {
         expectFailure(failedPreparation, .accessibility(-25204))
         precondition(failedPreparation.calls == ["application", "system", "prepare"])
         print("focus_resolver=PASS prepared_focus_owner_frontmost_and_error_guards")
+
+        // Which application is read: the keyboard-focus owner when it differs.
+        precondition(FocusTarget.pid(frontmost: 10, keyboardFocusOwner: 10, own: 99) == 10)
+        precondition(FocusTarget.pid(frontmost: 10, keyboardFocusOwner: nil, own: 99) == 10)
+        precondition(FocusTarget.pid(frontmost: 10, keyboardFocusOwner: 0, own: 99) == 10)
+        precondition(FocusTarget.pid(frontmost: 10, keyboardFocusOwner: 20, own: 99) == 20)
+        precondition(FocusTarget.pid(frontmost: 10, keyboardFocusOwner: 99, own: 99) == 10)
+        precondition(FocusTarget.pid(frontmost: 99, keyboardFocusOwner: 20, own: 99) == 20)
+        print("focus_target=PASS launcher_panel_owner, frontmost_default, own_panels_ignored")
     }
 }
