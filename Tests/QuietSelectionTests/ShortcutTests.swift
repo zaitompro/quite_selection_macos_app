@@ -32,8 +32,18 @@ import Foundation
         let fresh = load()
         check(fresh.count == 4, "four slots")
         check(fresh[0].short == .read && fresh[0].double == .translate && fresh[0].long == .primary, "text source: read, translate, primary")
-        check(fresh[1].short == .regionRead && fresh[1].double == .regionTranslate && fresh[1].long == .regionPrimary,
-              "region source: read, translate, primary")
+        check(fresh[1].short == .pointerRead && fresh[1].double == .pointerTranslate && fresh[1].long == .pointerPrimary,
+              "Command + Esc: recognition under the pointer")
+        check(fresh[2].short == .regionRead && fresh[2].double == .regionTranslate && fresh[2].long == .regionPrimary,
+              "Control + Esc: drawn region")
+        var placeholder = ShortcutSlot.defaults
+        placeholder[1].short = .regionRead; placeholder[1].double = .regionTranslate; placeholder[1].long = .regionPrimary
+        let upgraded = load(saved: placeholder.map(\.preferenceValue), layout: 2)
+        check(upgraded[1].short == .pointerRead && upgraded[1].long == .pointerPrimary && upgraded[1].shortcut == placeholder[1].shortcut,
+              "1.11 placeholder on Command + Esc becomes recognition under the pointer")
+        var chosen = placeholder
+        chosen[1].double = nil
+        check(load(saved: chosen.map(\.preferenceValue), layout: 2)[1] == chosen[1], "user-changed slot kept on upgrade")
         check(fresh[3].shortcut == Shortcut(keyCode: Shortcut.keypadZero, modifiers: Shortcut.control)
               && fresh[3].short == .repeatLast && fresh[3].double == nil && fresh[3].long == nil, "Control + Num 0 repeats")
         check(fresh[0].shortcut == Shortcut(keyCode: esc, modifiers: Shortcut.option | Shortcut.shift), "no setting: Option + Shift + Esc as before")
@@ -56,14 +66,14 @@ import Foundation
         // Saved slots of this layout win; duplicates resolved; round trip.
         var custom = ShortcutSlot.defaults
         custom[2].long = .repeatLast; custom[1].short = nil; custom[0].double = nil
-        check(load(saved: custom.map(\.preferenceValue), layout: 2) == custom, "slot round trip, including empty functions")
+        check(load(saved: custom.map(\.preferenceValue), layout: 3) == custom, "slot round trip, including empty functions")
         check(load(saved: custom.map(\.preferenceValue), layout: 0) != custom, "older layout number migrates")
         var clash = ShortcutSlot.defaults
         clash[1].shortcut = clash[0].shortcut
-        let resolved = load(saved: clash.map(\.preferenceValue), layout: 2)
+        let resolved = load(saved: clash.map(\.preferenceValue), layout: 3)
         check(Set(resolved.compactMap(\.shortcut)).count == resolved.compactMap(\.shortcut).count, "no two slots share keys")
         check(ShortcutSettings.conflict(for: 0, shortcut: ShortcutSlot.defaults[2].shortcut!, in: fresh) == 2, "conflict found")
-        check(ShortcutSettings.assignment(of: .regionRead, in: fresh)!.index == 1, "first assignment of a function")
+        check(ShortcutSettings.assignment(of: .regionRead, in: fresh)!.index == 2, "assignment of a function")
         check(ShortcutSettings.assignment(of: .regionTranslate, in: fresh)!.kind == .double, "double assignment reported")
         check(ShortcutSettings.threshold(nil) == 0.4 && ShortcutSettings.threshold(NSNumber(value: 5.0)) == 1.2, "threshold limits")
         check(ShortcutSettings.doubleInterval(nil) == 0.3 && ShortcutSettings.doubleInterval(NSNumber(value: 0.01)) == 0.15

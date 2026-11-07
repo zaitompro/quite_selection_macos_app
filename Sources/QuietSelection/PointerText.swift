@@ -42,6 +42,63 @@ struct PointerTarget {
     }
 }
 
+extension PointerTarget {
+    /// Where to look for the paragraph under the pointer: the screen under the
+    /// pointer, limited to the first element (or ancestor) large enough to hold
+    /// text, such as an image, a message or a document area. Only frames are read.
+    @MainActor
+    func recognitionBounds() -> CGRect {
+        let cocoaPoint = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - point.y)
+        let screen = NSScreen.screens.first { $0.frame.contains(cocoaPoint) } ?? NSScreen.screens.first
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        let screenRect = screen.map {
+            CGRect(x: $0.frame.minX, y: primaryTop - $0.frame.maxY, width: $0.frame.width, height: $0.frame.height)
+        } ?? .null
+        var current: AXUIElement? = element
+        for _ in 0..<10 {
+            guard let candidate = current else { break }
+            if let frame = Self.frame(of: candidate), frame.width >= 240, frame.height >= 48, frame.contains(point) {
+                return frame.intersection(screenRect)
+            }
+            var parent: CFTypeRef?
+            AXUIElementSetMessagingTimeout(candidate, 0.5)
+            guard AXUIElementCopyAttributeValue(candidate, kAXParentAttribute as CFString, &parent) == .success,
+                  let parent, CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
+            current = (parent as! AXUIElement)
+        }
+        return screenRect
+    }
+
+    private static func frame(of element: AXUIElement) -> CGRect? {
+        var position: CFTypeRef?, size: CFTypeRef?
+        AXUIElementSetMessagingTimeout(element, 0.5)
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &position) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &size) == .success,
+              let position, let size,
+              CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+        var origin = CGPoint.zero, extent = CGSize.zero
+        guard AXValueGetValue(position as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(size as! AXValue, .cgSize, &extent) else { return nil }
+        return CGRect(origin: origin, size: extent)
+    }
+
+    /// Pointer position only, for recognition when no element can be found.
+    @MainActor
+    static func location() -> CGPoint? {
+        guard let primaryTop = NSScreen.screens.first?.frame.maxY else { return nil }
+        let location = NSEvent.mouseLocation
+        return CGPoint(x: location.x, y: primaryTop - location.y)
+    }
+
+    @MainActor
+    static func screenBounds(at point: CGPoint) -> CGRect {
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        let cocoaPoint = CGPoint(x: point.x, y: primaryTop - point.y)
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(cocoaPoint) }) ?? NSScreen.screens.first else { return .null }
+        return CGRect(x: screen.frame.minX, y: primaryTop - screen.frame.maxY, width: screen.frame.width, height: screen.frame.height)
+    }
+}
+
 struct PointerTextReader {
     private let deadline = Date().addingTimeInterval(3)
     static let limit = 60_000

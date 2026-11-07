@@ -82,6 +82,30 @@ struct OCRTests {
         if CommandLine.arguments.contains("--write-fixture") {
             try combined.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "Resources/Fixtures/ocr-test.png"))
         }
+        // Lines with screen frames, then the paragraph under a synthetic pointer.
+        // The image stands for a 750 × 210 pt area at (100, 50) on screen.
+        let area = CGRect(x: 100, y: 50, width: 750, height: 210)
+        // Normal line spacing (about 1.2 × the font size) and a blank line between paragraphs.
+        let page = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1500, pixelsHigh: 420,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: page)
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 1500, height: 420).fill()
+        for (text, y) in [("Alpha paragraph line", 340), ("continues here", 286), ("Beta paragraph", 178)] {
+            (text as NSString).draw(at: NSPoint(x: 40, y: y), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 44), .foregroundColor: NSColor.black])
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        let paragraphImage = page.cgImage!
+        let lines = try OCRJob().recognizeLines(paragraphImage, languages: ["en"], in: area)
+        precondition(lines.count >= 3 && lines.allSatisfy { area.insetBy(dx: -1, dy: -1).contains($0.frame) })
+        let alpha = lines.first { $0.text.lowercased().contains("alpha") }!
+        let under = OCRParagraph.paragraph(lines: lines, pointer: CGPoint(x: alpha.frame.midX, y: alpha.frame.midY), capture: area)
+        precondition(under?.text.lowercased().contains("continues") == true && under?.text.lowercased().contains("beta") == false,
+                     "paragraph under pointer must stop at the blank line")
+        print("ocr=PASS lines_with_screen_frames paragraph_under_pointer")
         print("screen_captures=0 permission_prompts=0 recognized_text_logging=0")
     }
 }

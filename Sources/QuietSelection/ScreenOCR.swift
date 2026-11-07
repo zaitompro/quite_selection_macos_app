@@ -6,7 +6,7 @@ enum ScreenReadingError: Error {
     case empty, unsupportedLanguage, tooLarge, cancelled, capture
     var message: String {
         switch self {
-        case .empty: return "В выбранной области текст не найден"
+        case .empty: return "Текст на экране не найден"
         case .unsupportedLanguage: return "Выбранный язык не поддерживается распознаванием текста"
         case .tooLarge: return "Область слишком большая. Выделите меньший фрагмент."
         case .cancelled: return "Распознавание отменено"
@@ -60,6 +60,26 @@ final class OCRJob: @unchecked Sendable {
         if value { throw ScreenReadingError.cancelled }
     }
     func recognize(_ image: CGImage, languages: [String]) throws -> String {
+        let lines = try observations(image, languages: languages).compactMap { $0.topCandidates(1).first?.string }
+        let text = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw ScreenReadingError.empty }
+        guard text.utf16.count <= 60_000 else { throw SelectionFailure.tooLong }
+        return text
+    }
+
+    /// Recognised lines placed in global screen coordinates (top-left origin) of `rect`.
+    func recognizeLines(_ image: CGImage, languages: [String], in rect: CGRect) throws -> [OCRLine] {
+        try observations(image, languages: languages).compactMap { observation in
+            guard let text = observation.topCandidates(1).first?.string else { return nil }
+            let box = observation.boundingBox
+            let frame = CGRect(x: rect.minX + box.minX * rect.width,
+                               y: rect.minY + (1 - box.maxY) * rect.height,
+                               width: box.width * rect.width, height: box.height * rect.height)
+            return OCRLine(text: text, frame: frame)
+        }
+    }
+
+    private func observations(_ image: CGImage, languages: [String]) throws -> [VNRecognizedTextObservation] {
         try checkCancellation()
         guard image.width > 0, image.height > 0,
               Double(image.width) * Double(image.height) <= 48_000_000 else { throw ScreenReadingError.tooLarge }
@@ -78,10 +98,6 @@ final class OCRJob: @unchecked Sendable {
         try checkCancellation()
         try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         try checkCancellation()
-        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
-        let text = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw ScreenReadingError.empty }
-        guard text.utf16.count <= 60_000 else { throw SelectionFailure.tooLong }
-        return text
+        return request.results ?? []
     }
 }

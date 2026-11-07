@@ -21,7 +21,7 @@ xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
 build/RegionFocusTests
 xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
     -module-cache-path "$PWD/build/module-cache" -framework AppKit -framework Vision -framework ScreenCaptureKit \
-    Sources/QuietSelection/Selection.swift Sources/QuietSelection/ScreenOCR.swift Sources/QuietSelection/RegionFocus.swift Sources/QuietSelection/RegionPicker.swift Tests/QuietSelectionTests/RegionPickerTests.swift -o build/RegionPickerTests
+    Sources/QuietSelection/Selection.swift Sources/QuietSelection/OCRParagraph.swift Sources/QuietSelection/ScreenOCR.swift Sources/QuietSelection/RegionFocus.swift Sources/QuietSelection/RegionPicker.swift Tests/QuietSelectionTests/RegionPickerTests.swift -o build/RegionPickerTests
 xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
     -module-cache-path "$PWD/build/module-cache" -framework NaturalLanguage \
     Sources/QuietSelection/VoiceSettings.swift Sources/QuietSelection/LanguagePlan.swift Tests/QuietSelectionTests/VoiceSettingsTests.swift -o build/VoiceSettingsTests
@@ -48,10 +48,14 @@ xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
     -module-cache-path "$PWD/build/module-cache" \
     Sources/QuietSelection/Selection.swift Sources/QuietSelection/PointerPolicy.swift Tests/QuietSelectionTests/PointerTests.swift -o build/PointerTests
 build/PointerTests
+xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
+    -module-cache-path "$PWD/build/module-cache" \
+    Sources/QuietSelection/OCRParagraph.swift Tests/QuietSelectionTests/OCRParagraphTests.swift -o build/OCRParagraphTests
+build/OCRParagraphTests
 python3 Tests/privacy_audit.py
 xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
     -module-cache-path "$PWD/build/module-cache" -framework AppKit -framework Carbon -framework Vision -framework ScreenCaptureKit \
-    Sources/QuietSelection/Selection.swift Sources/QuietSelection/Shortcut.swift Sources/QuietSelection/HotKey.swift Sources/QuietSelection/ScreenOCR.swift Tests/QuietSelectionTests/OCRTests.swift -o build/OCRTests
+    Sources/QuietSelection/Selection.swift Sources/QuietSelection/Shortcut.swift Sources/QuietSelection/HotKey.swift Sources/QuietSelection/OCRParagraph.swift Sources/QuietSelection/ScreenOCR.swift Tests/QuietSelectionTests/OCRTests.swift -o build/OCRTests
 xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
     -module-cache-path "$PWD/build/module-cache" -framework AppKit -framework Carbon \
     Sources/QuietSelection/Shortcut.swift Sources/QuietSelection/HotKey.swift Sources/QuietSelection/ShortcutRecorder.swift Sources/QuietSelection/VoiceSettings.swift Sources/QuietSelection/SettingsStyle.swift Sources/QuietSelection/SpeechSettingsView.swift Sources/QuietSelection/TranslationPlan.swift Sources/QuietSelection/LanguagePlan.swift Sources/QuietSelection/TranslationSettingsView.swift Sources/QuietSelection/SettingsWindow.swift Sources/QuietSelection/AppMenu.swift Tests/QuietSelectionTests/WindowTests.swift -o build/WindowTests

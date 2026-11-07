@@ -80,6 +80,7 @@ extension Shortcut {
 enum ReadFunction: String, CaseIterable {
     // Raw values of 1.10 are kept so saved settings stay valid.
     case read, translate, primary
+    case pointerRead, pointerTranslate, pointerPrimary
     case regionRead = "screenRegion", regionTranslate, regionPrimary
     case repeatLast
 
@@ -88,6 +89,9 @@ enum ReadFunction: String, CaseIterable {
         case .read: return "Текст: читать"
         case .translate: return "Текст: перевести"
         case .primary: return "Текст: основным голосом"
+        case .pointerRead: return "Под курсором (распознать): читать"
+        case .pointerTranslate: return "Под курсором (распознать): перевести"
+        case .pointerPrimary: return "Под курсором (распознать): основным голосом"
         case .regionRead: return "Область: читать"
         case .regionTranslate: return "Область: перевести"
         case .regionPrimary: return "Область: основным голосом"
@@ -110,13 +114,13 @@ struct ShortcutSlot: Equatable {
 
     /// Source per shortcut, mode per gesture: single = read, double = translate,
     /// long = primary voice. Option + Esc: text from the system; Command + Esc:
-    /// recognition under the pointer (the drawn region until that exists);
-    /// Control + Esc: drawn screen region. Control + Num 0 repeats.
+    /// recognition under the pointer; Control + Esc: drawn screen region.
+    /// Control + Num 0 repeats.
     static let defaults: [ShortcutSlot] = [
         ShortcutSlot(shortcut: Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.option),
                      short: .read, double: .translate, long: .primary),
         ShortcutSlot(shortcut: Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.command),
-                     short: .regionRead, double: .regionTranslate, long: .regionPrimary),
+                     short: .pointerRead, double: .pointerTranslate, long: .pointerPrimary),
         ShortcutSlot(shortcut: Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.control),
                      short: .regionRead, double: .regionTranslate, long: .regionPrimary),
         ShortcutSlot(shortcut: Shortcut(keyCode: Shortcut.keypadZero, modifiers: Shortcut.control),
@@ -154,8 +158,9 @@ struct ShortcutSlot: Equatable {
 enum ShortcutSettings {
     static let preferenceKey = "ShortcutSlots"
     /// 2: source per shortcut, mode per gesture (version 1.11).
+    /// 3: Command + Esc recognises under the pointer (version 1.13).
     static let layoutKey = "ShortcutLayout"
-    static let layoutVersion = 2
+    static let layoutVersion = 3
     /// Format of version 1.9.0–1.9.1: one shortcut per action.
     static let actionPreferenceKey = "Shortcuts"
     static let thresholdKey = "LongPressThreshold"
@@ -177,8 +182,14 @@ enum ShortcutSettings {
     /// Control + Num 0 repeat shortcut.
     static func load(saved: [Any]?, layout: Int, actions: [String: Any]?, legacy: (String) -> Any?) -> [ShortcutSlot] {
         var slots: [ShortcutSlot]
-        if let saved, saved.count == ShortcutSlot.count, layout >= layoutVersion {
+        if let saved, saved.count == ShortcutSlot.count, layout >= 2 {
             slots = saved.map(ShortcutSlot.init(preferenceValue:))
+            // 1.11–1.12 placeholder: Command + Esc used the drawn region until
+            // recognition under the pointer existed. Replace it if unchanged.
+            if layout < 3, slots[1].short == .regionRead, slots[1].double == .regionTranslate,
+               slots[1].long == .regionPrimary {
+                slots[1].short = .pointerRead; slots[1].double = .pointerTranslate; slots[1].long = .pointerPrimary
+            }
         } else {
             slots = ShortcutSlot.defaults
             if let saved, saved.count == 3 {

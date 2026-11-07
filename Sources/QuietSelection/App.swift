@@ -140,6 +140,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         case .read: trigger()
         case .primary: trigger(mode: .primary)
         case .translate: trigger(mode: .translated)
+        case .pointerRead: triggerPointerOCR()
+        case .pointerPrimary: triggerPointerOCR(mode: .primary)
+        case .pointerTranslate: triggerPointerOCR(mode: .translated)
         case .regionRead: triggerOCR()
         case .regionPrimary: triggerOCR(mode: .primary)
         case .regionTranslate: triggerOCR(mode: .translated)
@@ -728,6 +731,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                     self.ocrBusy = false; self.captureTask = nil
                     self.reportOCRError(error)
                 }
+            }
+        }
+    }
+    /// Recognise the paragraph under the pointer: snapshot around the pointer,
+    /// limited to the element under it; grow toward cut edges at most twice.
+    private func triggerPointerOCR(mode: ReadMode = .normal) {
+        if busy { stop(); return }
+        guard !SecureInput.blocks(target: NSWorkspace.shared.frontmostApplication?.processIdentifier) else {
+            fail(SelectionFailure.secureKeyboard.message); return
+        }
+        guard CGPreflightScreenCaptureAccess() else { screenPermission(); return }
+        guard let point = PointerTarget.location() else { fail(ScreenReadingError.capture.message); return }
+        let target = AXIsProcessTrusted() ? PointerTarget.current() : nil
+        let bounds = target?.recognitionBounds() ?? PointerTarget.screenBounds(at: point)
+        let first = OCRParagraph.initialCapture(around: point, within: bounds)
+        guard RegionGeometry.validCapture(first) else { fail(ScreenReadingError.empty.message); return }
+        ocrGeneration += 1
+        let ticket = ocrGeneration
+        let languages = automatic ? allowed : [selection.language]
+        ocrBusy = true
+        setStatus("Распознавание текста под курсором…")
+        captureTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                var capture = first
+                var found: OCRParagraph.Result?
+                for attempt in 0...OCRParagraph.maxExpansions {
+                    try Task.checkCancellation()
+                    guard ticket == self.ocrGeneration else { return }
+                    let image = try await RegionCapture.image(in: capture)
+                    let job = OCRJob()
+                    self.ocrJob = job
+                    let area = capture
+                    let lines = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[OCRLine], Error>) in
+                        self.ocrWorker.async {
+                            continuation.resume(with: Result { try job.recognizeLines(image, languages: languages, in: area) })
+                        }
+                    }
+                    guard ticket == self.ocrGeneration else { return }
+                    found = OCRParagraph.paragraph(lines: lines, pointer: point, capture: capture)
+                    guard let paragraph = found, !paragraph.edges.isEmpty, attempt < OCRParagraph.maxExpansions else { break }
+                    let grown = OCRParagraph.expanded(capture, toward: paragraph.edges, within: bounds)
+                    guard grown != capture, RegionGeometry.validCapture(grown) else { break }
+                    capture = grown
+                }
+                self.ocrBusy = false; self.ocrJob = nil; self.captureTask = nil
+                guard let text = found?.text else { throw ScreenReadingError.empty }
+                guard text.utf16.count <= 60_000 else { throw SelectionFailure.tooLong }
+                self.read(text, mode: mode)
+            } catch {
+                guard ticket == self.ocrGeneration else { return }
+                self.ocrBusy = false; self.ocrJob = nil; self.captureTask = nil
+                self.reportOCRError(error)
             }
         }
     }
