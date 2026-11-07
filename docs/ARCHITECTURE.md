@@ -1,6 +1,6 @@
 # Architecture / Устройство приложения
 
-QuietSelection is a small native Swift/AppKit menu-bar application. There is intentionally no web service, clipboard adapter, external dependency manager or application-wide accessibility-tree crawler.
+QuietSelection is a small native Swift/AppKit menu-bar application. There is intentionally no web service, external dependency manager or application-wide accessibility-tree crawler. The clipboard is used only by the opt-in copy fallback described below.
 
 ## Source map
 
@@ -38,6 +38,12 @@ Settings are stored in the application's UserDefaults domain. Only configuration
 
 The settings window's additional-language list is height-constrained and scrolls independently. Command + Q and Command + W close settings; explicit Quit exits the application.
 
+## Copy fallback
+
+For applications the user lists in Settings → General (stored as bundle identifiers in `CopyFallbackApps`), a failed Accessibility read (no focus, no selection, unsupported, invalid response or an Accessibility error) is followed by a copy read. Secure input, permission, size and app-switch failures never are.
+
+`CopyFallback.swift` holds the platform-free logic. The whole clipboard (every item and type) is saved first; concealed/transient entries, file promises, unreadable types or more than 50 MB cancel the fallback before anything is copied. Copy commands are tried in order until the change count moves: pressing the menu item whose shortcut is ⌘C (`ClipboardCopy.swift`, menu bar only, `kAXPressAction` only), then ⌘C posted to the target process after the user releases all modifiers and Escape. After the count settles the plain text is taken and the saved clipboard is restored immediately — unless the count moved again, in which case the newer content is kept. Every error path after copying restores as well. `ClipboardCopy.swift` is the only file the privacy audit allows to use `NSPasteboard`, `CGEvent`, `kAXChildrenAttribute` or `AXUIElementPerformAction`.
+
 ## Tests
 
 `Tests/QuietSelectionTests/` contains standalone Swift test executables. They use in-memory backends, native test controls and synthetic text/images. `Tests/privacy_audit.py` rejects known prohibited API patterns and checks OCR capture restrictions. Build and GUI tests are separate so ordinary logic checks do not request system permissions or inspect the user's apps.
@@ -48,7 +54,7 @@ The settings window's additional-language list is height-constrained and scrolls
 
 При ошибке одного способа получения выделения пробуется следующий; запросы ждут дольше и повторяются один раз, если приложение занято. Защищённый ввод в другом приложении больше не блокирует чтение. Для браузеров на Chromium и приложений на Electron доступность «будится» чтением роли приложения, без записи атрибутов.
 
-Ключевые ограничения: не использовать буфер обмена и имитацию копирования, не читать страницу или дерево доступности целиком вместо выделения, не отправлять пользовательский текст в сеть и не сохранять его на диск. OCR запускается только после явного выбора области. Основной язык отвечает и за ручной режим, и за неуверенное автоопределение; голос и скорость задаются для каждого языка отдельно.
+Ключевые ограничения: буфер обмена и копирование только в «Чтении через копирование» для приложений из списка пользователя, с полным возвратом буфера; не читать страницу или дерево доступности целиком вместо выделения, не отправлять пользовательский текст в сеть и не сохранять его на диск. OCR запускается только после явного выбора области. Основной язык отвечает и за ручной режим, и за неуверенное автоопределение; голос и скорость задаются для каждого языка отдельно.
 
 ## Translation
 

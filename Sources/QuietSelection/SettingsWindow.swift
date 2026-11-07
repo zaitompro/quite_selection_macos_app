@@ -26,6 +26,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     var onStop: (() -> Void)?
     var onQuit: (() -> Void)?
     var onRefresh: (() -> Void)?
+    var onAddCopyApp: ((String) -> Void)?
+    var onRemoveCopyApp: ((String) -> Void)?
 
     let speechSettings = SpeechSettingsView(frame: .zero)
     let translationSettings = TranslationSettingsView(frame: .zero)
@@ -41,6 +43,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     private let loginNote = NSTextField(wrappingLabelWithString: "")
     private let permissionNote = NSTextField(wrappingLabelWithString: "")
     private let status = NSTextField(wrappingLabelWithString: "Готово")
+    private let copyAppsList = NSStackView()
+    private let copyAddMenu = NSPopUpButton()
+    private var copyAppIDs: [String] = []
+    private var copyCandidateIDs: [String] = []
     private var loginSettings: NSButton!
     private var pages: [NSView] = []
     private let tabs = NSTabView()
@@ -121,6 +127,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
             note.font = .systemFont(ofSize: 16)
             note.textColor = .labelColor
         }
+        copyAppsList.orientation = .vertical
+        copyAppsList.alignment = .leading
+        copyAppsList.spacing = 8
+        copyAppsList.setAccessibilityLabel("Приложения для чтения через копирование")
+        copyAddMenu.controlSize = .large
+        copyAddMenu.font = .systemFont(ofSize: 17)
+        copyAddMenu.target = self
+        copyAddMenu.action = #selector(copyAppAdded)
+        copyAddMenu.setAccessibilityLabel("Добавить приложение для чтения через копирование")
         speechSettings.onLanguage = { [weak self] in self?.onLanguage?($0) }
         speechSettings.onVoice = { [weak self] in self?.onVoice?($0, $1) }
         speechSettings.onRate = { [weak self] in self?.onRate?($0, $1) }
@@ -166,7 +181,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
             label("Доступ к выделенному тексту", bold: true),
             permissionNote,
             button("Настройки доступа…", #selector(permission)),
-            label("Текст обрабатывается на Mac. Буфер обмена не используется; выделенный текст не сохраняется в журнале.", size: 16),
+            label("Чтение через копирование", bold: true),
+            label("Для приложений, которые показывают выделение, но не передают его системе (например, Telegram). Если обычное чтение не удалось, QuietSelection просит приложение скопировать выделенный текст и сразу возвращает прежнее содержимое буфера обмена. Если буфер нельзя вернуть без потерь (пароль, файлы, очень большой объём), он не трогается.", size: 16),
+            copyAppsList,
+            copyAddMenu,
+            label("Текст обрабатывается на Mac и не сохраняется в журнале. Буфер обмена используется только для приложений из списка выше.", size: 16),
             label("QuietSelection \(version)", size: 16)
         ], spacing: 22)
         let screenPage = column([
@@ -302,6 +321,25 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         permissionNote.stringValue = trusted ? "Доступ разрешён." : "Нужно разрешение «Универсальный доступ» для QuietSelection."
     }
     func setStatus(_ message: String) { status.stringValue = message }
+    func updateCopyFallback(apps: [(id: String, name: String)], candidates: [(id: String, name: String)]) {
+        copyAppIDs = apps.map(\.id)
+        for view in copyAppsList.arrangedSubviews { copyAppsList.removeArrangedSubview(view); view.removeFromSuperview() }
+        if apps.isEmpty {
+            copyAppsList.addArrangedSubview(label("Список пуст.", size: 16))
+        }
+        for (index, app) in apps.enumerated() {
+            let remove = button("Убрать", #selector(copyAppRemoved(_:)))
+            remove.tag = index
+            remove.setAccessibilityLabel("Убрать \(app.name) из чтения через копирование")
+            copyAppsList.addArrangedSubview(row([label(app.name), remove]))
+        }
+        copyCandidateIDs = candidates.map(\.id)
+        copyAddMenu.removeAllItems()
+        copyAddMenu.addItem(withTitle: "Добавить запущенное приложение…")
+        copyAddMenu.addItems(withTitles: candidates.map(\.name))
+        copyAddMenu.selectItem(at: 0)
+        copyAddMenu.isEnabled = !candidates.isEmpty
+    }
     func updateExtraShortcuts(primary: PrimaryShortcut, primaryRegistered: Bool,
                               translation: TranslationShortcut, translationRegistered: Bool) {
         primaryShortcutMenu.selectItem(at: primary.rawValue)
@@ -418,5 +456,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     @objc private func openLoginSettings() { onLoginSettings?() }
     @objc private func permission() { onPermission?() }
     @objc private func stop() { onStop?() }
+    @objc private func copyAppAdded() {
+        let index = copyAddMenu.indexOfSelectedItem - 1
+        copyAddMenu.selectItem(at: 0)
+        guard copyCandidateIDs.indices.contains(index) else { return }
+        onAddCopyApp?(copyCandidateIDs[index])
+    }
+    @objc private func copyAppRemoved(_ sender: NSButton) {
+        guard copyAppIDs.indices.contains(sender.tag) else { return }
+        onRemoveCopyApp?(copyAppIDs[sender.tag])
+    }
     @objc private func quit() { onQuit?() }
 }

@@ -46,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     private var selection = VoiceSettings(language: "ru", saved: [:], legacyID: nil, voices: [])
     private var automatic = false
     private var allowed: [String] { selection.allowedLanguages }
+    /// Bundle identifiers whose selection may be read by asking the app to copy it.
+    private var copyApps: [String] = []
 
     static func availableVoices() -> [VoiceChoice] {
         Speech.installedVoices().map {
@@ -64,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
             additional: preferences.dictionary(forKey: "AdditionalLanguages") as? [String: Bool],
             legacyAllowed: preferences.stringArray(forKey: "AllowedLanguages") ?? ["ru", "en", "ja"])
         automatic = preferences.bool(forKey: "AutomaticLanguage")
+        copyApps = preferences.stringArray(forKey: "CopyFallbackApps") ?? []
         applySpeechSettings()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "Читать"
@@ -127,7 +130,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                                       permitted: CGPreflightScreenCaptureAccess())
         settings?.updateExtraShortcuts(primary: primaryShortcut, primaryRegistered: primaryRegistered,
             translation: translationShortcut, translationRegistered: translationRegistered)
+        if settings != nil { updateCopyFallbackSettings() }
         refreshTranslation()
+    }
+    private func updateCopyFallbackSettings() {
+        let own = Bundle.main.bundleIdentifier
+        var seen = Set(copyApps)
+        let candidates = NSWorkspace.shared.runningApplications.compactMap { app -> (id: String, name: String)? in
+            guard let id = app.bundleIdentifier, id != own, app.activationPolicy != .prohibited,
+                  seen.insert(id).inserted else { return nil }
+            return (id, app.localizedName ?? id)
+        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        settings?.updateCopyFallback(apps: copyApps.map { ($0, Self.applicationName($0)) }, candidates: candidates)
+    }
+    private static func applicationName(_ id: String) -> String {
+        if let running = NSRunningApplication.runningApplications(withBundleIdentifier: id).first?.localizedName {
+            return running
+        }
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
+            return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+        }
+        return id
+    }
+    private func setCopyApps(_ ids: [String]) {
+        copyApps = ids
+        preferences.set(ids, forKey: "CopyFallbackApps")
+        refresh()
     }
     @objc func closeSettings() { settings?.closeSettings() }
     @objc func quitApplication() { NSApp.terminate(nil) }
@@ -191,6 +219,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
             }
             controller.onLoginSettings = { LoginLaunch.openSettings() }
             controller.onPermission = { [weak self] in self?.permission() }
+            controller.onAddCopyApp = { [weak self] id in
+                guard let self, !self.copyApps.contains(id) else { return }
+                self.setCopyApps(self.copyApps + [id])
+            }
+            controller.onRemoveCopyApp = { [weak self] id in
+                guard let self else { return }
+                self.setCopyApps(self.copyApps.filter { $0 != id })
+            }
             controller.onPreview = { [weak self] in self?.preview(language: $0) }
             controller.onStop = { [weak self] in self?.stop() }
             controller.onQuit = { [weak self] in self?.quitApplication() }
@@ -244,8 +280,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         // Application-role preparation only for Chromium browsers and Electron
         // apps; it was validated with ChatGPT/Codex (see focus-investigation).
         let allowsAccessibilityPreparation = ChromiumFamily.contains(app)
+        let allowsCopy = app.bundleIdentifier.map(copyApps.contains) ?? false
         worker.async { [weak self] in
             var result: Result<String, Error>
+            var viaCopy = false
             var backend = AccessibilityBackend(pid: pid, allowsAccessibilityPreparation: allowsAccessibilityPreparation)
             if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
                 result = .failure(SelectionFailure.changedApplication)
@@ -261,6 +299,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                         backend = retry
                         result = Result { try SelectionReader(backend: retry).read() }
                     }
+                }
+                // Listed applications only: ask the app to copy its selection,
+                // then restore the previous clipboard (see CopyFallback.swift).
+                if allowsCopy, case .failure(let error) = result,
+                   (error as? SelectionFailure)?.allowsCopyFallback == true,
+                   NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                   !SecureInput.blocks(target: pid) {
+                    viaCopy = true
+                    result = Result { try ClipboardCopy.read(pid: pid) }
                 }
             }
             let diagnosticRole = backend.diagnostics.role
@@ -279,13 +326,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 switch result {
                 case .success(let text):
                     self.read(text, mode: mode)
+                    if viaCopy, self.speech.speaking {
+                        self.setStatus("Чтение через копирование, буфер обмена восстановлен; повторное сочетание — остановить")
+                    }
                 case .failure(let error):
+                    if let copyFailure = error as? CopyFallbackFailure { self.fail(copyFailure.message); return }
                     let reason = error as? SelectionFailure
                     let detail: String
                     if reason == .secureInput || reason == .secureKeyboard { detail = "" }
                     else if reason == .noFocus { detail = " (\(focusReport))" }
                     else { detail = " (\(diagnosticRole); \(diagnosticStage))" }
-                    self.fail((reason?.message ?? "Не удалось получить выделение") + detail)
+                    let hint = !allowsCopy && reason?.allowsCopyFallback == true
+                        ? ". Если выделение видно, но не читается, включите для этого приложения «Чтение через копирование» (Настройки → Общие)."
+                        : ""
+                    self.fail((reason?.message ?? "Не удалось получить выделение") + detail + hint)
                 }
             }
         }
@@ -578,6 +632,8 @@ struct QuietSelectionMain {
                 testShortcut: false, login: "enabled", trusted: true)
             controller.updateScreenReading(shortcut: .controlEscape, registered: true, permitted: false)
             controller.translationSettings.update(target: "ru", sources: ["en", "ja"], states: [:])
+            controller.updateCopyFallback(apps: [("ru.keepcoder.Telegram", "Telegram")],
+                                          candidates: [("com.runningwithcrayons.Alfred", "Alfred")])
             controller.updateExtraShortcuts(primary: .controlOptionEscape, primaryRegistered: true,
                 translation: .commandEscape, translationRegistered: true)
             do {

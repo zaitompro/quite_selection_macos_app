@@ -36,6 +36,10 @@ xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
 xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
     -module-cache-path "$PWD/build/module-cache" -framework AppKit \
     Sources/QuietSelection/Selection.swift Sources/QuietSelection/LocalSelection.swift Tests/QuietSelectionTests/LocalSelectionTests.swift -o build/LocalSelectionTests
+xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
+    -module-cache-path "$PWD/build/module-cache" \
+    Sources/QuietSelection/Selection.swift Sources/QuietSelection/CopyFallback.swift Tests/QuietSelectionTests/CopyFallbackTests.swift -o build/CopyFallbackTests
+build/CopyFallbackTests
 python3 Tests/privacy_audit.py
 xcrun swiftc -target "$target" -swift-version 5 -warnings-as-errors \
     -module-cache-path "$PWD/build/module-cache" -framework AppKit -framework Carbon -framework Vision -framework ScreenCaptureKit \
