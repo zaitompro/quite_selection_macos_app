@@ -16,7 +16,10 @@ def inspect(path):
     if not requirement or not code_hash:
         raise SystemExit("FAIL: missing persistent signing requirement or code hash")
     info = plistlib.loads((path / "Contents" / "Info.plist").read_bytes())
-    return {"version": info["CFBundleShortVersionString"],
+    executable = path / "Contents" / "MacOS" / info["CFBundleExecutable"]
+    archs = subprocess.run(["/usr/bin/lipo", "-archs", str(executable)],
+                           check=True, capture_output=True, text=True).stdout.split()
+    return {"version": info["CFBundleShortVersionString"], "archs": archs,
             "requirement": requirement[1], "code_hash": code_hash[1]}
 
 
@@ -29,6 +32,9 @@ installed, candidate = args.installed.resolve(), args.candidate.resolve()
 before, after = inspect(installed), inspect(candidate)
 if not args.allow_rebuild and (before["version"] == after["version"] or before["code_hash"] == after["code_hash"]):
     raise SystemExit("FAIL: test update must change both version and signed code hash")
+# The installed copy may still be an older Intel build; the candidate must not be.
+if after["archs"] != ["arm64"]:
+    raise SystemExit(f"FAIL: candidate must be a native arm64 build, got {after['archs']}")
 if before["requirement"] != after["requirement"]:
     raise SystemExit("FAIL: signing identity changed")
 for app in (installed, candidate):
@@ -40,5 +46,6 @@ report_path = Path(__file__).resolve().parent.parent / "build" / "update-test-re
 report_path.parent.mkdir(parents=True, exist_ok=True)
 report_path.write_text(json.dumps(report, indent=2) + "\n")
 print(f"PASS: {before['version']} -> {after['version']}; signing identity preserved.")
+print(f"PASS: architecture {'/'.join(before['archs'])} -> {'/'.join(after['archs'])}.")
 print("PASS: both releases satisfy the installed version's signing requirement.")
 print("Accessibility permissions were not requested or changed.")

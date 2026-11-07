@@ -1,10 +1,10 @@
 .PHONY: build test test-gui audit
 
 build:
-	bash Scripts/build.sh
+	/bin/bash Scripts/build.sh
 
 test:
-	bash Scripts/test.sh
+	/bin/bash Scripts/test.sh
 
 test-gui: test
 	build/RegionPickerTests

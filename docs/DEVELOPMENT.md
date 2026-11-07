@@ -7,6 +7,7 @@ Run commands from the repository root. The checked-in build uses `xcrun swiftc`,
 - `make test`: executes selection, focus, voice configuration, language planning and privacy checks. It also compiles GUI, OCR and speech tests.
 - `make test-gui`: additionally executes the native tests. These use their own test views and synthetic images/text. They do not read another application's content or capture the screen. `SpeechTests` validates speech plans without playing audio.
 - `make build`: produces a signed `build/QuietSelection.app`. Signing must already be configured.
+- All binaries target `arm64-apple-macos<LSMinimumSystemVersion>` explicitly. Builds made under Rosetta (for example, by an Intel Homebrew `bash` earlier in `PATH`) previously produced x86_64 executables that macOS warns about and that ran the audio stack under translation. `build.sh` and `verify_update.py` now reject non-arm64 candidates.
 - `make audit`: runs only the static privacy checks. These are guardrails, not proof of runtime behaviour.
 
 Optional checks after building:
@@ -63,6 +64,8 @@ No upload, release publication or repository push is part of these scripts.
 ## Краткая инструкция на русском
 
 Команды выполняются из корня репозитория: `make test`, затем при необходимости `make test-gui`, затем `make build`. Сборка создаёт отдельный пакет в `build/`; рабочее приложение автоматически не заменяется.
+
+Сборка всегда нативная для Apple Silicon (arm64), даже если скрипт запущен под Rosetta. Пакет другой архитектуры `build.sh` и `verify_update.py` отклоняют.
 
 На текущем Mac постоянная подпись уже настроена. Файлы `.local/` не включаются в Git, закрытый ключ остаётся в Связке ключей. Не создавайте новую подпись для уже установленного приложения. На новом Mac первоначальная настройка выполняется только после осознанного разрешения на создание ключа и изменение доверия для подписи кода.
 
