@@ -24,7 +24,7 @@ struct OCRTests {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         if CommandLine.arguments.contains("--hotkeys") {
-            let choices = [ShortcutAction.screen.defaultShortcut,
+            let choices = [ShortcutSlot.defaults[2].shortcut!,
                            Shortcut(keyCode: Shortcut.escape, modifiers: Shortcut.control | Shortcut.shift)]
             for (index, shortcut) in choices.enumerated() {
                 let key = try HotKey(identifier: UInt32(100 + index))

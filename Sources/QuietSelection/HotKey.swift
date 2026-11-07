@@ -4,8 +4,10 @@ final class HotKey {
     private var reference: EventHotKeyRef?
     private var handler: EventHandlerRef?
     private var pressed = false
+    private var pressedAt = Date.distantPast
     private let identifier: UInt32
-    var action: (() -> Void)?
+    var onPress: (() -> Void)?
+    var onRelease: (() -> Void)?
 
     init(identifier: UInt32 = 1) throws {
         self.identifier = identifier
@@ -23,10 +25,14 @@ final class HotKey {
                 return OSStatus(eventNotHandledErr)
             }
             if GetEventKind(event) == UInt32(kEventHotKeyReleased) {
+                guard owner.pressed else { return noErr }
                 owner.pressed = false
-            } else if !owner.pressed {
+                owner.onRelease?()
+            } else if !owner.pressed || Date().timeIntervalSince(owner.pressedAt) > 2 {
+                // A lost release event must not block the shortcut for good.
                 owner.pressed = true
-                owner.action?()
+                owner.pressedAt = Date()
+                owner.onPress?()
             }
             return noErr
         }, events.count, &events, Unmanaged.passUnretained(self).toOpaque(), &handler)

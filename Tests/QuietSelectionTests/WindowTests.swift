@@ -25,7 +25,6 @@ struct WindowTests {
         let delegate = WindowTestDelegate()
         app.delegate = delegate
         app.mainMenu = AppMenu.make(target: delegate)
-        let defaults = Dictionary(uniqueKeysWithValues: ShortcutAction.allCases.map { ($0, $0.defaultShortcut) })
         DispatchQueue.main.async {
             check(app, delegate: delegate)
             if let index = CommandLine.arguments.firstIndex(of: "--render"), CommandLine.arguments.count > index + 1 {
@@ -36,7 +35,7 @@ struct WindowTests {
                 delegate.controller.update(voices: voices, selection: selection, automatic: true, login: "enabled")
                 delegate.controller.updatePermissions(accessibility: true, screen: true)
                 delegate.controller.translationSettings.update(target: "ru", sources: ["en", "ja"], states: ["en": .supported, "ja": .supported])
-                delegate.controller.updateShortcuts(defaults, failed: [])
+                delegate.controller.updateShortcuts(ShortcutSlot.defaults, failed: [], threshold: 0.4)
                 try! delegate.controller.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
             }
             exit(0)
@@ -153,27 +152,36 @@ struct WindowTests {
         delegate.controller.selectSection(0)
         print("translation_ui=PASS fixed_scroll, readiness_states, explicit_download, primary_change")
 
-        // Shortcut recorders: one per action, current values shown, reset sends the default.
+        // Shortcut slots: recorder, short and long menus; one recording at a time.
         delegate.controller.selectSection(3)
-        var shortcutValues = Dictionary(uniqueKeysWithValues: ShortcutAction.allCases.map { ($0, $0.defaultShortcut) })
-        shortcutValues[.primary] = Shortcut(keyCode: 15, modifiers: Shortcut.control | Shortcut.option)
-        delegate.controller.updateShortcuts(shortcutValues, failed: [.translate])
+        var slots = ShortcutSlot.defaults
+        slots[1].shortcut = Shortcut(keyCode: 15, modifiers: Shortcut.control | Shortcut.option)
+        slots[2].long = .repeatLast
+        delegate.controller.updateShortcuts(slots, failed: [1], threshold: 0.55)
         let recorders = delegate.controller.recorders
-        precondition(recorders.count == ShortcutAction.allCases.count)
-        precondition(recorders[.read]!.title == "Option + Esc")
-        precondition(recorders[.primary]!.title == "Control + Option + R")
+        precondition(recorders.count == ShortcutSlot.count)
+        precondition(recorders[0]!.title == "Option + Esc" && recorders[1]!.title == "Control + Option + R")
+        precondition(delegate.controller.shortMenus[0]!.titleOfSelectedItem == ReadFunction.read.title)
+        precondition(delegate.controller.longMenus[0]!.titleOfSelectedItem == ReadFunction.primary.title)
+        precondition(delegate.controller.longMenus[2]!.titleOfSelectedItem == ReadFunction.repeatLast.title)
+        precondition(abs(delegate.controller.thresholdSlider.doubleValue - 0.55) < 0.001)
+        var functionChange: (Int, Bool, ReadFunction?)?
+        delegate.controller.onSlotFunction = { functionChange = ($0, $1, $2) }
+        let longMenu = delegate.controller.longMenus[1]!
+        longMenu.selectItem(at: 0)
+        longMenu.sendAction(longMenu.action, to: longMenu.target)
+        precondition(functionChange?.0 == 1 && functionChange?.1 == true && functionChange?.2 == nil)
         var recordingEvents: [Bool] = []
         delegate.controller.onShortcutChange = { _, _ in }
         delegate.controller.onShortcutRecording = { recordingEvents.append($0) }
-        recorders[.screen]!.performClick(nil)
-        precondition(recorders[.screen]!.recording && recordingEvents == [true])
-        recorders[.read]!.performClick(nil)
-        precondition(!recorders[.screen]!.recording && recorders[.read]!.recording)
-        recorders[.read]!.stop()
-        precondition(!recorders[.read]!.recording && recordingEvents.last == false)
-        precondition(recorders[.read]!.title == "Option + Esc")
+        recorders[2]!.performClick(nil)
+        precondition(recorders[2]!.recording && recordingEvents == [true])
+        recorders[0]!.performClick(nil)
+        precondition(!recorders[2]!.recording && recorders[0]!.recording)
+        recorders[0]!.stop()
+        precondition(!recorders[0]!.recording && recordingEvents.last == false && recorders[0]!.title == "Option + Esc")
         delegate.controller.selectSection(0)
-        print("shortcut_ui=PASS recorders_titles_single_recording_cancel")
+        print("shortcut_ui=PASS slots_short_long_menus_threshold_single_recording")
 
         // Local AppKit menu dispatch only: no posting or injecting keyboard events.
         func command(_ letter: String, code: UInt16) -> Bool {

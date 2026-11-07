@@ -10,7 +10,7 @@ All application sources are in `Sources/QuietSelection/`.
 | --- | --- |
 | `App.swift` | Application lifecycle, preferences, command routing and orchestration |
 | `AppMenu.swift`, `HotKey.swift`, `LoginLaunch.swift` | Explicit menu actions, global shortcuts and launch at login |
-| `Shortcut.swift`, `ShortcutRecorder.swift` | User-recorded shortcuts: validation, defaults, migration of earlier fixed choices, conflicts; recording control and key names |
+| `Shortcut.swift`, `ShortcutRecorder.swift` | Three shortcut slots with short- and long-press functions, press gesture, validation, defaults, migration of earlier choices, conflicts; recording control and key names |
 | `CopyFallback.swift`, `ClipboardCopy.swift` | Opt-in copy reading for listed applications, with full clipboard restore |
 | `Selection.swift` | Selection-only extraction policy with bounded UTF-16 lengths |
 | `FocusedElement.swift`, `Accessibility.swift` | Narrow focus resolution and supported selected-text/range attributes |
@@ -41,6 +41,10 @@ Automatic speech considers the primary language and enabled additional languages
 Settings are stored in the application's UserDefaults domain. Only configuration is persisted: languages, voice identifiers, rates, shortcut choices and related preferences. Selected text, OCR images and reading history are not persisted. Disabling or removing an additional language retains its saved voice and rate for later reuse.
 
 The settings window's additional-language list is height-constrained and scrolls independently. Command + Q and Command + W close settings; explicit Quit exits the application.
+
+## Shortcuts and press gestures
+
+Three Carbon hot keys report press and release. `PressGesture` decides: a press while anything is being read stops it; without a long-press function the short one runs at once; otherwise release before the adjustable threshold (default 0.4 s) runs the short function and reaching it plays a click and runs the long one. A lost release event cannot block a shortcut for more than 2 s. "Repeat last" keeps only the last spoken text in memory until it is replaced or the app quits. Failures play one uncommon system sound (Basso); the long-press click is Pop.
 
 ## Copy fallback
 

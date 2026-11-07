@@ -7,10 +7,15 @@ import AVFoundation
 final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
     private let speech = Speech()
     private let worker = DispatchQueue(label: "local.quietselection.ax", qos: .userInitiated)
-    private var hotKeys: [ShortcutAction: HotKey] = [:]
-    private var shortcuts: [ShortcutAction: Shortcut] = [:]
-    /// Actions whose keys could not be registered (taken by another application).
-    private var failedShortcuts: Set<ShortcutAction> = []
+    private var hotKeys: [Int: HotKey] = [:]
+    private var slots = ShortcutSlot.defaults
+    /// Slots whose keys could not be registered (taken by another application).
+    private var failedShortcuts: Set<Int> = []
+    private var gestures = [PressGesture](repeating: PressGesture(), count: ShortcutSlot.count)
+    private var gestureTickets = [Int](repeating: 0, count: ShortcutSlot.count)
+    private var longPressThreshold = ShortcutSettings.defaultThreshold
+    /// The last text spoken, kept in memory only, for "repeat last".
+    private var lastReading: (text: String, primary: Bool)?
     private enum ReadMode { case normal, primary, translated }
     private let translator = LocalTranslation()
     private var translationTask: Task<Void, Never>?
@@ -70,14 +75,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 self.setStatus("Готово")
             }
         }
-        shortcuts = ShortcutSettings.load(saved: preferences.dictionary(forKey: ShortcutSettings.preferenceKey),
-                                          legacy: { [preferences] in preferences.object(forKey: $0) })
-        for action in ShortcutAction.allCases {
+        slots = ShortcutSettings.load(saved: preferences.array(forKey: ShortcutSettings.preferenceKey),
+                                      actions: preferences.dictionary(forKey: ShortcutSettings.actionPreferenceKey),
+                                      legacy: { [preferences] in preferences.object(forKey: $0) })
+        longPressThreshold = ShortcutSettings.threshold(preferences.object(forKey: ShortcutSettings.thresholdKey))
+        for index in slots.indices {
             do {
-                let key = try HotKey(identifier: action.hotKeyID)
-                key.action = { [weak self] in self?.perform(action) }
-                hotKeys[action] = key
-            } catch { failedShortcuts.insert(action) }
+                let key = try HotKey(identifier: ShortcutSlot.hotKeyID(index))
+                key.onPress = { [weak self] in self?.shortcutPressed(index) }
+                key.onRelease = { [weak self] in self?.shortcutReleased(index) }
+                hotKeys[index] = key
+            } catch { failedShortcuts.insert(index) }
         }
         registerAllShortcuts()
         saveShortcuts()
@@ -87,23 +95,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         if CommandLine.arguments.contains("--show-settings") { showSettings() }
     }
 
-    private func perform(_ action: ShortcutAction) {
-        switch action {
+    // MARK: Short and long presses
+
+    private func shortcutPressed(_ index: Int) {
+        let hasLong = slots[index].long != nil
+        gestureTickets[index] += 1
+        let ticket = gestureTickets[index]
+        handle(gestures[index].press(busy: busy, hasLong: hasLong), slot: index)
+        guard hasLong, gestures[index].held else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + longPressThreshold) { [weak self] in
+            guard let self, self.gestureTickets[index] == ticket else { return }
+            let outcome = self.gestures[index].thresholdReached()
+            if outcome != .none { Feedback.longPress() }
+            self.handle(outcome, slot: index)
+        }
+    }
+    private func shortcutReleased(_ index: Int) {
+        handle(gestures[index].release(), slot: index)
+    }
+    private func handle(_ outcome: PressGesture.Outcome, slot index: Int) {
+        switch outcome {
+        case .none: return
+        case .stop: stop()
+        case .perform(let long):
+            if let function = long ? slots[index].long : slots[index].short { perform(function) }
+        }
+    }
+    private func perform(_ function: ReadFunction) {
+        switch function {
         case .read: trigger()
         case .primary: trigger(mode: .primary)
         case .translate: trigger(mode: .translated)
-        case .screen: triggerOCR()
+        case .screenRegion: triggerOCR()
+        case .repeatLast: repeatLast()
         }
     }
+    private func repeatLast() {
+        if busy { stop(); return }
+        guard let last = lastReading else { fail("Ещё нечего повторять"); return }
+        let success = last.primary
+            ? speech.speakPrimary(last.text, voiceID: selection.selectedVoice(in: voices)?.id, rate: selection.rate(for: selection.language))
+            : speech.speak(last.text)
+        if success { setStatus("Чтение: повтор последнего; повторное сочетание — остановить") }
+        else { fail("Нужный голос недоступен. Выберите его в настройках речи.") }
+    }
+
+    // MARK: Shortcut settings
+
     private func registerAllShortcuts() {
-        for action in ShortcutAction.allCases {
-            guard let key = hotKeys[action], let shortcut = shortcuts[action] else { continue }
-            do { try key.register(shortcut); failedShortcuts.remove(action) }
-            catch { failedShortcuts.insert(action) }
+        for index in slots.indices {
+            guard let key = hotKeys[index] else { continue }
+            guard let shortcut = slots[index].shortcut else { key.unregister(); continue }
+            do { try key.register(shortcut); failedShortcuts.remove(index) }
+            catch { failedShortcuts.insert(index) }
         }
     }
     private func saveShortcuts() {
-        preferences.set(ShortcutSettings.preferenceValue(shortcuts), forKey: ShortcutSettings.preferenceKey)
+        preferences.set(slots.map(\.preferenceValue), forKey: ShortcutSettings.preferenceKey)
+        preferences.set(longPressThreshold, forKey: ShortcutSettings.thresholdKey)
     }
     /// While a new shortcut is recorded, the current ones must not fire.
     private func setShortcutRecording(_ recording: Bool) {
@@ -111,28 +160,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         else { registerAllShortcuts() }
         refresh()
     }
-    private func changeShortcut(_ action: ShortcutAction, to requested: Shortcut) {
-        guard let key = hotKeys[action] else { return }
+    private func changeShortcut(_ index: Int, to requested: Shortcut) {
+        guard let key = hotKeys[index] else { return }
         defer { refresh() }
-        guard requested.isValid, shortcuts[action] != requested || failedShortcuts.contains(action) else { return }
-        if let other = ShortcutSettings.conflict(for: action, shortcut: requested, in: shortcuts) {
-            fail("«\(KeyNames.title(requested))» уже назначено действию «\(other.title)». Прежнее сочетание сохранено.")
-            settings?.showShortcutMessage("Это сочетание уже используется для «\(other.title)».")
+        guard requested.isValid, slots[index].shortcut != requested || failedShortcuts.contains(index) else { return }
+        if let other = ShortcutSettings.conflict(for: index, shortcut: requested, in: slots) {
+            fail("«\(KeyNames.title(requested))» уже назначено сочетанию \(other + 1). Прежнее сохранено.")
+            settings?.showShortcutMessage("Это сочетание уже используется в строке \(other + 1).")
             return
         }
         do {
             try key.register(requested)
-            shortcuts[action] = requested
-            failedShortcuts.remove(action)
+            slots[index].shortcut = requested
+            failedShortcuts.remove(index)
             saveShortcuts()
-            setStatus("\(action.title): \(KeyNames.title(requested))")
+            setStatus("Сочетание \(index + 1): \(KeyNames.title(requested))")
             settings?.showShortcutMessage("")
         } catch {
             fail("«\(KeyNames.title(requested))» занято другим приложением или системой. Прежнее сочетание сохранено.")
             settings?.showShortcutMessage("«\(KeyNames.title(requested))» занято другим приложением или системой.")
             // Re-register the previous keys in case they were released.
-            if let previous = shortcuts[action] { try? key.register(previous) }
+            if let previous = slots[index].shortcut { try? key.register(previous) }
         }
+    }
+    private func changeSlotFunction(_ index: Int, long: Bool, to function: ReadFunction?) {
+        if long { slots[index].long = function } else { slots[index].short = function }
+        saveShortcuts()
+        refresh()
     }
 
     private func applySpeechSettings() {
@@ -156,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         speech.voiceID = selection.selectedVoice(in: voices)?.id
         settings?.update(voices: voices, selection: selection, automatic: automatic, login: LoginLaunch.statusCode)
         settings?.updatePermissions(accessibility: AXIsProcessTrusted(), screen: CGPreflightScreenCaptureAccess())
-        settings?.updateShortcuts(shortcuts, failed: failedShortcuts)
+        settings?.updateShortcuts(slots, failed: failedShortcuts, threshold: longPressThreshold)
         settings?.setStatus(message, busy: busy)
         if settings != nil { updateCopyFallbackSettings() }
         refreshTranslation()
@@ -231,6 +285,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 self.applySpeechSettings(); self.refresh()
             }
             controller.onShortcutChange = { [weak self] in self?.changeShortcut($0, to: $1) }
+            controller.onSlotFunction = { [weak self] in self?.changeSlotFunction($0, long: $1, to: $2) }
+            controller.onThreshold = { [weak self] value in
+                guard let self else { return }
+                self.longPressThreshold = ShortcutSettings.threshold(NSNumber(value: value))
+                self.saveShortcuts()
+            }
             controller.onShortcutRecording = { [weak self] in self?.setShortcutRecording($0) }
             controller.translationSettings.onRefresh = { [weak self] in self?.refreshTranslation(force: true) }
             controller.translationSettings.onDownload = { [weak self] in self?.prepareTranslation(source: $0) }
@@ -376,7 +436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         let rate = selection.rate(for: selection.language)
         if mode != .translated {
             let success = mode == .primary ? speech.speakPrimary(text, voiceID: voiceID, rate: rate) : speech.speak(text)
-            if success { setStatus("Чтение; повторное сочетание — остановить") }
+            if success { lastReading = (text, mode == .primary); setStatus("Чтение; повторное сочетание — остановить") }
             else { fail("Нужный голос недоступен. Выберите его в настройках речи.") }
             return
         }
@@ -411,6 +471,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                 self.translating = false; self.translationTask = nil
                 self.translator.cancel()
                 if self.speech.speakPrimary(translated, voiceID: voiceID, rate: rate) {
+                    self.lastReading = (translated, true)
                     self.setStatus("Чтение на основном языке; повторное сочетание — остановить")
                 } else { self.fail("Основной голос недоступен. Выберите его в настройках речи.") }
             } catch {
@@ -481,7 +542,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
         }
         preparation?.present()
     }
-    private func fail(_ text: String) { setStatus(text); NSSound.beep() }
+    private func fail(_ text: String) { setStatus(text); Feedback.failure() }
     private func stop() {
         generation += 1
         translationTask?.cancel(); translationTask = nil
@@ -584,7 +645,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AppMenuActions {
                             self.ocrBusy = false; self.ocrJob = nil; self.captureTask = nil
                             switch result {
                             case .success(let text):
-                                if self.speech.speak(text) { self.setStatus("Чтение распознанного текста; повторное сочетание — остановить") }
+                                if self.speech.speak(text) { self.lastReading = (text, false); self.setStatus("Чтение распознанного текста; повторное сочетание — остановить") }
                                 else { self.fail("Нужный голос недоступен. Выберите его в настройках речи.") }
                             case .failure(let error): self.reportOCRError(error)
                             }
@@ -626,8 +687,7 @@ struct QuietSelectionMain {
             let selection = VoiceSettings(language: "ru", saved: [:], legacyID: nil, voices: voices)
             controller.update(voices: voices, selection: selection, automatic: true, login: "enabled")
             controller.updatePermissions(accessibility: true, screen: false)
-            controller.updateShortcuts(Dictionary(uniqueKeysWithValues: ShortcutAction.allCases.map { ($0, $0.defaultShortcut) }),
-                                       failed: [])
+            controller.updateShortcuts(ShortcutSlot.defaults, failed: [], threshold: ShortcutSettings.defaultThreshold)
             controller.translationSettings.update(target: "ru", sources: ["en", "ja"], states: [:])
             controller.updateCopyFallback(apps: [("ru.keepcoder.Telegram", "Telegram")],
                                           candidates: [("com.runningwithcrayons.Alfred", "Alfred")])
@@ -660,9 +720,10 @@ struct QuietSelectionMain {
             let rates = defaults.dictionary(forKey: "SpeechRatesByLanguage") as? [String: NSNumber] ?? [:]
             let legacyRate = defaults.object(forKey: "SpeechRate") == nil ? AVSpeechUtteranceDefaultSpeechRate : defaults.float(forKey: "SpeechRate")
             let rate = Speech.validatedRate(rates[primary]?.floatValue ?? legacyRate)
-            let keys = ShortcutSettings.load(saved: defaults.dictionary(forKey: ShortcutSettings.preferenceKey),
+            let keys = ShortcutSettings.load(saved: defaults.array(forKey: ShortcutSettings.preferenceKey),
+                                             actions: defaults.dictionary(forKey: ShortcutSettings.actionPreferenceKey),
                                              legacy: { defaults.object(forKey: $0) })
-            print("speech_rate=\(rate) read_shortcut=\(keys[.read].map(KeyNames.title) ?? "none")")
+            print("speech_rate=\(rate) shortcuts=\(keys.map { $0.shortcut.map(KeyNames.title) ?? "none" })")
             print("selection_queries=0 permission_prompts=0")
             return
         }
@@ -788,5 +849,16 @@ enum ChromiumFamily {
     private static func hasRenderer(_ directory: URL) -> Bool {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
         return names.contains { $0.hasSuffix(" Helper (Renderer).app") }
+    }
+}
+
+/// Short system sounds: a click when a long press is recognised, and one
+/// uncommon sound when a function could not be carried out.
+@MainActor
+enum Feedback {
+    static func longPress() { play("Pop") }
+    static func failure() { play("Basso") }
+    private static func play(_ name: String) {
+        (NSSound(named: NSSound.Name(name))?.copy() as? NSSound)?.play()
     }
 }

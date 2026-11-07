@@ -14,7 +14,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     var onAllowed: ((String, Bool) -> Void)?
     var onAddLanguage: ((String) -> Void)?
     var onRemoveLanguage: ((String) -> Void)?
-    var onShortcutChange: ((ShortcutAction, Shortcut) -> Void)?
+    var onShortcutChange: ((Int, Shortcut) -> Void)?
+    var onSlotFunction: ((Int, Bool, ReadFunction?) -> Void)?
+    var onThreshold: ((Double) -> Void)?
     var onShortcutRecording: ((Bool) -> Void)?
     var onReadRegion: (() -> Void)?
     var onScreenPermission: (() -> Void)?
@@ -30,10 +32,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
 
     let speechSettings = SpeechSettingsView(frame: .zero)
     let translationSettings = TranslationSettingsView(frame: .zero)
-    private(set) var recorders: [ShortcutAction: ShortcutRecorder] = [:]
-    private var shortcutCaptions: [ShortcutAction: NSTextField] = [:]
-    private var shortcutWarnings: [ShortcutAction: NSTextField] = [:]
-    private var shortcuts: [ShortcutAction: Shortcut] = [:]
+    private(set) var recorders: [Int: ShortcutRecorder] = [:]
+    private(set) var shortMenus: [Int: NSPopUpButton] = [:]
+    private(set) var longMenus: [Int: NSPopUpButton] = [:]
+    private var shortcutWarnings: [Int: NSTextField] = [:]
+    let thresholdSlider = NSSlider(value: ShortcutSettings.defaultThreshold,
+                                   minValue: ShortcutSettings.thresholdRange.lowerBound,
+                                   maxValue: ShortcutSettings.thresholdRange.upperBound, target: nil, action: nil)
+    private let thresholdValue = NSTextField(labelWithString: "")
     private let shortcutHint = SettingsUI.caption("")
     private let screenShortcut = NSTextField(labelWithString: "")
     private let loginSwitch = SettingsSwitch(frame: .zero)
@@ -105,14 +111,32 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         ], spacing: 12)
     }
 
+    private func functionMenu(slot: Int, long: Bool) -> NSPopUpButton {
+        let menu = NSPopUpButton()
+        menu.font = .systemFont(ofSize: SettingsUI.bodySize)
+        menu.addItem(withTitle: "Ничего")
+        for function in ReadFunction.allCases {
+            menu.addItem(withTitle: function.title)
+            menu.lastItem?.representedObject = function.rawValue
+        }
+        menu.tag = slot * 2 + (long ? 1 : 0)
+        menu.target = self
+        menu.action = #selector(slotFunctionChanged(_:))
+        menu.setAccessibilityLabel("Сочетание \(slot + 1), \(long ? "долгое" : "короткое") нажатие")
+        menu.setContentHuggingPriority(.required, for: .horizontal)
+        menu.widthAnchor.constraint(greaterThanOrEqualToConstant: 250).isActive = true
+        return menu
+    }
+
     private func shortcutsPage() -> NSView {
-        var rows: [NSView] = []
-        for action in ShortcutAction.allCases {
-            let recorder = ShortcutRecorder(actionTitle: action.title)
-            recorder.onRecord = { [weak self] in self?.onShortcutChange?(action, $0) }
+        var views: [NSView] = [SettingsUI.pageTitle("Сочетания клавиш"),
+            SettingsUI.caption("У каждого сочетания два действия: короткое нажатие и долгое. Долгое срабатывает после щелчка — тогда клавиши можно отпустить. Любое сочетание во время чтения останавливает его.")]
+        for index in 0..<ShortcutSlot.count {
+            let recorder = ShortcutRecorder(actionTitle: "сочетание \(index + 1)")
+            recorder.onRecord = { [weak self] in self?.onShortcutChange?(index, $0) }
             recorder.onRecordingChanged = { [weak self] recording in
                 guard let self else { return }
-                if recording { for (other, view) in self.recorders where other != action { view.stop() } }
+                if recording { for (other, view) in self.recorders where other != index { view.stop() } }
                 self.shortcutHint.stringValue = recording
                     ? "Введите сочетание: нужна клавиша Command, Option или Control. Esc — отмена." : ""
                 self.onShortcutRecording?(recording)
@@ -120,28 +144,40 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
             recorder.onInvalid = { [weak self] in
                 self?.shortcutHint.stringValue = "Нужна хотя бы одна из клавиш Command, Option или Control. Esc — отмена."
             }
-            let reset = SettingsUI.iconButton("arrow.counterclockwise", label: "Вернуть сочетание по умолчанию: " + action.title,
+            let reset = SettingsUI.iconButton("arrow.counterclockwise",
+                                              label: "Вернуть сочетание \(index + 1) по умолчанию",
                                               target: self, action: #selector(resetShortcut(_:)))
-            reset.tag = ShortcutAction.allCases.firstIndex(of: action)!
-            let caption = SettingsUI.caption(action.caption)
+            reset.tag = index
             let warning = SettingsUI.caption("")
             warning.isHidden = true
-            let captions = NSStackView(views: [caption, warning])
-            captions.orientation = .vertical
-            captions.alignment = .leading
-            captions.spacing = 1
-            for view in [caption, warning] { view.widthAnchor.constraint(equalTo: captions.widthAnchor).isActive = true }
-            recorders[action] = recorder
-            shortcutCaptions[action] = caption
-            shortcutWarnings[action] = warning
-            rows.append(SettingsUI.row(action.title, caption: captions, controls: [recorder, reset]))
+            let short = functionMenu(slot: index, long: false)
+            let long = functionMenu(slot: index, long: true)
+            recorders[index] = recorder
+            shortMenus[index] = short
+            longMenus[index] = long
+            shortcutWarnings[index] = warning
+            views.append(SettingsUI.card([
+                SettingsUI.row("Сочетание \(index + 1)", caption: warning, controls: [recorder, reset]),
+                SettingsUI.row("Коротко", controls: [short]),
+                SettingsUI.row("Долго", controls: [long])
+            ]))
         }
-        return SettingsUI.page([
-            SettingsUI.pageTitle("Сочетания клавиш"),
-            SettingsUI.card(rows),
-            shortcutHint,
-            SettingsUI.caption("Нажмите на сочетание и введите новое. Сочетания работают и при закрытом окне настроек; повторное нажатие останавливает чтение.")
-        ], spacing: 12)
+        thresholdSlider.target = self
+        thresholdSlider.action = #selector(thresholdChanged)
+        thresholdSlider.isContinuous = true
+        thresholdSlider.trackFillColor = SettingsPalette.accent
+        thresholdSlider.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        thresholdSlider.setAccessibilityLabel("Время удержания для долгого нажатия")
+        thresholdValue.font = .monospacedDigitSystemFont(ofSize: SettingsUI.bodySize, weight: .medium)
+        thresholdValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        views += [
+            SettingsUI.card([
+                SettingsUI.row("Долгое нажатие", caption: SettingsUI.caption("Сколько держать сочетание до щелчка"),
+                               controls: [thresholdSlider, thresholdValue])
+            ]),
+            shortcutHint
+        ]
+        return SettingsUI.page(views, spacing: 12)
     }
 
     private func screenPage() -> NSView {
@@ -328,16 +364,17 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
         screenPermissionPage.update(granted: screen)
     }
 
-    /// `failed`: actions whose keys could not be registered (taken by another app).
-    func updateShortcuts(_ values: [ShortcutAction: Shortcut], failed: Set<ShortcutAction>) {
-        shortcuts = values
-        for action in ShortcutAction.allCases {
-            recorders[action]?.shortcut = values[action]
-            let warning = shortcutWarnings[action]
-            if failed.contains(action) {
+    /// `failed`: slots whose keys could not be registered (taken by another app).
+    func updateShortcuts(_ slots: [ShortcutSlot], failed: Set<Int>, threshold: Double) {
+        for (index, slot) in slots.enumerated() {
+            recorders[index]?.shortcut = slot.shortcut
+            select(slot.short, in: shortMenus[index])
+            select(slot.long, in: longMenus[index])
+            let warning = shortcutWarnings[index]
+            if failed.contains(index) {
                 warning?.stringValue = "Не удалось назначить: сочетание занято. Выберите другое."
                 warning?.textColor = .systemOrange
-            } else if let value = values[action], let conflict = action.systemConflict(value) {
+            } else if let conflict = slot.shortcut?.systemConflict {
                 warning?.stringValue = conflict
                 warning?.textColor = .secondaryLabelColor
             } else {
@@ -345,7 +382,24 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
             }
             warning?.isHidden = warning?.stringValue.isEmpty ?? true
         }
-        screenShortcut.stringValue = values[.screen].map(KeyNames.title) ?? "Не назначено"
+        thresholdSlider.doubleValue = threshold
+        updateThresholdValue()
+        if let place = ShortcutSettings.assignment(of: .screenRegion, in: slots),
+           let shortcut = slots[place.index].shortcut {
+            screenShortcut.stringValue = KeyNames.title(shortcut) + (place.long ? ", долгое нажатие" : "")
+        } else {
+            screenShortcut.stringValue = "Не назначено"
+        }
+    }
+
+    private func select(_ function: ReadFunction?, in menu: NSPopUpButton?) {
+        guard let menu else { return }
+        let index = function.flatMap { value in menu.itemArray.firstIndex { ($0.representedObject as? String) == value.rawValue } } ?? 0
+        menu.selectItem(at: index)
+    }
+
+    private func updateThresholdValue() {
+        thresholdValue.stringValue = String(format: "%.2f с", thresholdSlider.doubleValue).replacingOccurrences(of: ".", with: ",")
     }
 
     func showShortcutMessage(_ message: String) { shortcutHint.stringValue = message }
@@ -515,10 +569,19 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTableViewDat
     // MARK: Actions
 
     @objc private func resetShortcut(_ sender: NSButton) {
-        let actions = ShortcutAction.allCases
-        guard actions.indices.contains(sender.tag) else { return }
-        let action = actions[sender.tag]
-        onShortcutChange?(action, action.defaultShortcut)
+        guard ShortcutSlot.defaults.indices.contains(sender.tag),
+              let shortcut = ShortcutSlot.defaults[sender.tag].shortcut else { return }
+        onShortcutChange?(sender.tag, shortcut)
+    }
+    @objc private func slotFunctionChanged(_ sender: NSPopUpButton) {
+        let function = (sender.selectedItem?.representedObject as? String).flatMap(ReadFunction.init(rawValue:))
+        onSlotFunction?(sender.tag / 2, sender.tag % 2 == 1, function)
+    }
+    @objc private func thresholdChanged() {
+        // Steps of 0.05 s are enough and easier to hear back.
+        thresholdSlider.doubleValue = (thresholdSlider.doubleValue * 20).rounded() / 20
+        updateThresholdValue()
+        onThreshold?(thresholdSlider.doubleValue)
     }
     @objc private func readRegion() { onReadRegion?() }
     @objc private func screenPermission() { onScreenPermission?() }
